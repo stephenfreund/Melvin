@@ -170,34 +170,58 @@ prover installed. There are ~270 tests at ~96% line coverage.
 
 ## How the implementation is validated
 
-Unit tests mostly check the code against itself. To gain confidence that the
-tool implements the *analysis* correctly, several checks compare it against
-independent ground truth:
+Unit tests mostly check the code against itself. Real correctness assurance
+needs **independent ground truth** and **laws the analysis must obey**. Five
+kinds of checks go beyond self-consistency:
 
-* **Differential oracle against the operational semantics.** `moverlogic/interp.py`
-  is a from-scratch small-step interpreter of MLL with an explicit-state
-  scheduler that explores *all* thread interleavings and detects any reachable
-  `wrong`. The verifier's soundness theorem says a verified program cannot go
-  wrong, so `tests/test_semantics_oracle.py` asserts that for every program the
-  verifier accepts, the interpreter finds no reachable `wrong` — and for a
-  matched *unsafe* variant, the verifier rejects **and** the interpreter finds a
-  `wrong`. The interpreter is a much simpler, independent implementation, so it
-  is a trustworthy cross-check (`examples/oracle_safe.mml` / `oracle_unsafe.mml`).
-* **Algebraic laws of the effect domain** (`tests/test_effects_laws.py`).
-  Exhaustively over the six-element lattice: `;` is associative with `B` as
-  identity and `E` absorbing; `;`, `*`, and `⊔` are monotone. These are exactly
-  the properties the compositional analysis and the rule of consequence rely on,
-  so a transcription error in the paper's tables would be caught.
-* **Boogie ⟷ Python algebra agreement** (`tests/test_prelude.py`). A generated
-  Boogie program asserts `seqEff`/`leqEff` equal the Python `effects` result on
-  all 36 pairs, so the two implementations of the effect algebra cannot drift.
-* **Systematic mutation testing** (`tests/test_mutation.py`). Verified programs
-  are broken in semantics-changing ways (drop a lock op, drop an interior yield,
-  swap acquire/release movers, weaken a postcondition) and each mutant must be
-  rejected — guarding against the checker becoming vacuous (no false negatives).
-* **Generated-Boogie well-formedness** (`tests/test_wellformed.py`). Boogie must
-  parse, resolve, and type-check every generated program (no `tool_failure`,
-  no resolution errors), so code generation never emits malformed output.
+### 1. Differential oracle against the operational semantics — the biggest win
+
+`moverlogic/interp.py` is a from-scratch small-step interpreter of MLL with an
+explicit-state scheduler that explores *all* thread interleavings and detects
+any reachable `wrong`. It is a much simpler, independent implementation of the
+semantics, so it is a trustworthy cross-check of the whole verifier pipeline.
+
+The soundness theorem says *verified ⟹ cannot go wrong*, so
+`tests/test_semantics_oracle.py` asserts:
+
+* every program the verifier **accepts** → the interpreter finds **no** reachable
+  `wrong` (checked on `counter`, `counter_client2`, `nonatomic_two_yields`,
+  `oracle_safe`); and
+* a matched **unsafe** variant → the verifier **rejects** *and* the interpreter
+  finds a `wrong`.
+
+`examples/oracle_safe.mml` / `oracle_unsafe.mml` demonstrate the pairing: `add2`
+(even-preserving) verifies and is proven safe, while `add1` (breaks evenness) is
+rejected and the interpreter finds the failing `assert even(x)`. If the verifier
+ever had a soundness bug — accepting something unsafe — this catches it.
+
+### 2. Algebraic laws of the effect domain
+
+`tests/test_effects_laws.py` exhaustively proves, over the six-element lattice,
+that `;` is associative with `B` as identity and `E` absorbing, and that `;`,
+`*`, and `⊔` are monotone — exactly the properties the compositional analysis
+and the rule of consequence (M-conseq) depend on. A transcription error in the
+paper's `;`/`*`/`⊔` tables would surface here.
+
+### 3. Boogie ⟷ Python algebra agreement
+
+`tests/test_prelude.py` generates a Boogie program asserting `seqEff`/`leqEff`
+equal the Python `effects` result on all 36 pairs, so the two implementations of
+the effect algebra (Python-side for the static analysis, Boogie-side inside the
+generated VCs) cannot drift apart.
+
+### 4. Systematic mutation testing
+
+`tests/test_mutation.py` breaks verified programs in semantics-changing ways
+(drop a lock op, drop an interior yield, swap the acquire/release movers, weaken
+a postcondition) and asserts each mutant is **rejected** — guarding against the
+checker silently becoming vacuous (i.e. against false negatives).
+
+### 5. Generated-Boogie well-formedness
+
+`tests/test_wellformed.py` confirms Boogie can parse, resolve, and type-check
+**every** generated program (no `tool_failure`, no resolution errors) across all
+language constructs, so code generation never emits malformed Boogie.
 
 > **On "Boogie Python bindings":** there is no official Python binding for the
 > Boogie verifier — the `boogie` package on PyPI is an unrelated Django helper.
