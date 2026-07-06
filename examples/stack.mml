@@ -1,0 +1,36 @@
+// Lock-free stack (paper, Figure "Lock-Free Stack").
+//
+// `top` is an immutable list (Nil, v::s, head, tail from the prelude).  push
+// and pop are lock-free but atomic: the unstable reads and list allocations are
+// right-/both-movers and the successful cas is the single non-mover commit, so
+// each operation is one reducible sequence R*[N]L* and gets an intuitive
+// postcondition with no rely-stabilisation.
+
+var List top  write non-mover if true
+              read  non-mover if true;
+
+// push(v): cons v onto top with a retrying cas.
+atomic
+requires true
+ensures  head(top) == v && tail(top) == \old(top)
+push() {
+  t = *top;
+  nt = v :: t;
+  while (!cas(top, t, nt)) invariant top == \old(top) {
+    t = *top;
+    nt = v :: t;
+  }
+}
+
+// pop(): remove and return the head with a retrying cas.  Requires a non-empty
+// stack so head/tail are meaningful.
+atomic
+requires top != Nil
+ensures  head(\old(top)) == result && tail(\old(top)) == top
+pop() {
+  t = *top;
+  while (!cas(top, t, tail(t))) invariant top == \old(top) {
+    t = *top;
+  }
+  result = head(t);
+}

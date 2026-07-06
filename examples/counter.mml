@@ -1,0 +1,61 @@
+// The running example from the Mover Logic paper (Figure "Motivating Example,
+// Revisited"): an atomic add() on a lock-protected shared counter x, together
+// with a client whose data invariant is even(x).
+//
+// Mover Logic verifies that add() is *atomic* (a single reducible sequence),
+// so add() gets the precise, client-independent postcondition
+//     x == \old(x) + n  &&  result == x
+// while the client separately maintains its own even(x) invariant.
+
+// Shared counter, protected by lock m: every access is a both-mover as long as
+// the accessing thread holds m.
+var int x  both-mover if m == tid;
+
+// The lock m: an acquire (0 -> tid) is a right-mover; a release (tid -> 0) is a
+// left-mover.  These are the classic mover specifications for a mutex.
+lock m  write right-mover if \old(m) == 0 && m == tid
+        write left-mover  if \old(m) == tid && m == 0;
+
+// add(): atomically increase x by the thread-local argument n and return the
+// new value in the thread-local result.  Declared atomic (default mover N).
+// (Mover Logic omits frame conditions, so we state m == \old(m) explicitly to
+//  record that add leaves the lock as it found it.)
+atomic
+requires true
+ensures  x == \old(x) + n && result == x && m == \old(m)
+add() {
+  acquire(m);
+  t = x;          // read of x     (both-mover: lock held)
+  t = t + n;      // local compute (both-mover)
+  x = t;          // write of x    (both-mover: lock held)
+  result = t;     // local
+  release(m);
+}
+
+// A client with the data invariant even(x).  Each thread repeatedly adds 2 and
+// so preserves evenness.  The rely/guarantee summarise the *atomic* effect of
+// add(), not its internal (temporarily odd) states.
+// The rely/guarantee are two-store predicates: an interference step preserves
+// evenness of x.  This is reflexive (even(x) ==> even(x)) and transitive, as
+// required, and crucially summarises only the *atomic* effect of add().
+relies     even(\old(x)) ==> even(x)
+guarantees even(\old(x)) ==> even(x)
+requires   even(x)
+ensures    even(x)
+client() {
+  yield;
+  n = 2;
+  add();
+  yield;
+  n = 2;
+  add();
+  yield;
+}
+
+// The counter starts at 0 (even) with the lock free.
+init x == 0 && m == 0;
+
+// The initial state forks two client threads (each begins with a yield, as in
+// the paper's non-preemptive formalisation).
+thread { client(); }
+thread { client(); }

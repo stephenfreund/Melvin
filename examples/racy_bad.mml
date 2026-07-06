@@ -1,0 +1,23 @@
+// A deliberately BROKEN program, used to demonstrate that Mover Logic rejects
+// unsafe code and reports the failure at the right source location.
+//
+// bad_add() updates the shared counter x WITHOUT holding the lock m.  The
+// access to x is therefore not a both-mover (it races with other threads), so
+// the mover specification for x is violated.  Running the verifier on this file
+// reports a data-race error on the `x = t;` line.
+
+var int x  both-mover if m == tid;
+
+lock m  write right-mover if \old(m) == 0 && m == tid
+        write left-mover  if \old(m) == tid && m == 0;
+
+atomic
+requires true
+ensures  x == \old(x) + n
+bad_add() {
+  t = x;          // <-- race: reads x without holding m
+  t = t + n;
+  x = t;          // <-- race: writes x without holding m
+}
+
+init x == 0 && m == 0;

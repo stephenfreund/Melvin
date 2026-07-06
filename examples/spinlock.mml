@@ -1,0 +1,48 @@
+// Spin lock example (paper, Figure "Spin Lock").
+//
+// The counter library is rewritten to use a user-defined spin lock instead of
+// a built-in mutex.  Mover Logic verifies that spin_lock() is an atomic
+// *right-mover* and spin_unlock() an atomic *left-mover*, so add()'s
+// specification is IDENTICAL to the built-in-lock version: still atomic, same
+// postcondition.  This is the "disentanglement" the paper advertises.
+
+var int x  both-mover if l == tid;
+
+// The spin lock l is an ordinary shared int (0 = free, tid = held).  Its mover
+// specification is the classic lock discipline.
+var int l  write right-mover if \old(l) == 0 && l == tid
+           write left-mover  if \old(l) == tid && l == 0
+           read  both-mover  if l == tid;
+
+// spin_lock(): retry cas(l, 0, tid) until it succeeds.  Failing cas operations
+// are both-movers; the successful cas is the right-mover commit.  The loop is
+// R*[N]L* with no commit inside, so the whole function is a right-mover.
+atomic right-mover
+requires true
+ensures  l == tid
+spin_lock() {
+  while (!cas(l, 0, tid)) invariant true { skip; }
+}
+
+// spin_unlock(): release by storing 0.  A left-mover.
+atomic left-mover
+requires l == tid
+ensures  l == 0
+spin_unlock() {
+  l = 0;
+}
+
+// add() is unchanged from counter.mml apart from using the spin lock.
+atomic
+requires true
+ensures  x == \old(x) + n && result == x && l == 0
+add() {
+  spin_lock();
+  t = x;
+  t = t + n;
+  x = t;
+  result = t;
+  spin_unlock();
+}
+
+init x == 0 && l == 0;

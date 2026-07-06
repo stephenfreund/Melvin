@@ -1,0 +1,37 @@
+// Lock-free single-element queue (paper, Figure "Lock-Free Queue").
+//
+// `buf` holds the single enqueued value, or 0 when the queue is empty (we use 0
+// as the empty sentinel instead of Optional[int] to keep the example in the
+// integer fragment).  Both operations are lock-free yet *atomic* in Mover
+// Logic: failing cas operations are both-movers, the successful cas is the lone
+// non-mover commit, and dequeue's unstable read is a right-mover.  The effect
+// pattern R*[N]L* makes each operation a single reducible sequence.
+
+// Every successful write to buf (a cas) is a non-mover; failing cas operations
+// are identity/both-movers and unstable reads are right-movers (handled
+// specially), so this one clause is all we need.
+var int buf  write non-mover if true
+             read  non-mover if true;
+
+// enqueue(v): publish v (v is a nonzero thread-local argument) by cas-ing buf
+// from empty (0) to v.  Atomic non-mover.
+atomic
+requires v != 0
+ensures  buf == v
+enqueue() {
+  while (!cas(buf, 0, v)) invariant buf == \old(buf) { skip; }
+}
+
+// dequeue(): read buf with an unstable read, then cas it back to empty.  The
+// successful cas guarantees the returned value equals the value that was in
+// buf, and empties the queue.  Atomic.
+atomic
+requires true
+ensures  result == \old(buf) && buf == 0
+dequeue() {
+  r = *buf;
+  while (!cas(buf, r, 0)) invariant buf == \old(buf) {
+    r = *buf;
+  }
+  result = r;
+}

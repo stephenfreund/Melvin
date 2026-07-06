@@ -1,0 +1,46 @@
+// Disentanglement, part 2 (paper, Figure "Limitations", right-hand client).
+//
+// This is the SAME add() library as counter.mml, with an IDENTICAL atomic
+// specification, reused by a *different* client whose data invariant is
+// x >= 0 instead of even(x).  Under plain rely-guarantee logic the library
+// spec would have to be re-tuned per client; in Mover Logic the atomic
+// postcondition x == \old(x) + n is client-independent, so both clients verify
+// against the same add().
+
+var int x  both-mover if m == tid;
+
+lock m  write right-mover if \old(m) == 0 && m == tid
+        write left-mover  if \old(m) == tid && m == 0;
+
+atomic
+requires true
+ensures  x == \old(x) + n && result == x && m == \old(m)
+add() {
+  acquire(m);
+  t = x;
+  t = t + n;
+  x = t;
+  result = t;
+  release(m);
+}
+
+// This client keeps x non-negative.  Its rely/guarantee say interference only
+// ever increases x, which preserves x >= 0.
+relies     \old(x) <= x
+guarantees \old(x) <= x
+requires   x >= 0
+ensures    x >= 0
+client() {
+  yield;
+  n = 2;
+  add();
+  yield;
+  n = 40;
+  add();
+  yield;
+}
+
+init x == 0 && m == 0;
+
+thread { client(); }
+thread { client(); }
