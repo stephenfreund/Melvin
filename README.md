@@ -15,8 +15,7 @@ postconditions that plain RG logic forces on shared-memory code.  This
 "disentangles" a library's specification from any particular client's data
 invariant and synchronization discipline.
 
-Melvin follows the architecture of the **Anchor**/**Synchronicity** verifiers:
-it parses a small concurrent language, builds an AST, type-checks it, lowers
+Melvin parses a small concurrent language, builds an AST, type-checks it, lowers
 the Mover Logic proof obligations to Boogie verification conditions, runs
 Boogie, and maps prover failures back to the original source location.
 
@@ -225,12 +224,6 @@ checker silently becoming vacuous (i.e. against false negatives).
 `tests/test_wellformed.py` confirms Boogie can parse, resolve, and type-check
 **every** generated program (no `tool_failure`, no resolution errors) across all
 language constructs, so code generation never emits malformed Boogie.
-
-> **On "Boogie Python bindings":** there is no official Python binding for the
-> Boogie verifier — the `boogie` package on PyPI is an unrelated Django helper.
-> This tool therefore invokes the Boogie executable through a small, isolated
-> backend (`melvin/boogie_backend.py`); a real binding could replace it
-> without touching the rest of the pipeline.
 
 ---
 
@@ -572,6 +565,6 @@ Melvin implements the logic of:
 > Reasoning.* In 38th European Conference on Object-Oriented Programming
 > (ECOOP 2024). Leibniz International Proceedings in Informatics (LIPIcs),
 > Volume 313, pp. 16:1–16:29, Schloss Dagstuhl – Leibniz-Zentrum für
-> Informatik (2024). <https://doi.org/10.4230/LIPIcs.ECOOP.2024.16>
+> Informatik (2024).
 
 It is inspired architecturally by the Anchor and Synchronicity verifiers.
