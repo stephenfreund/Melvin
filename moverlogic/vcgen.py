@@ -194,6 +194,12 @@ class Lowerer:
         clauses = self._clauses_for(gname, access)
         cur = self.cur_map(scope)
         old = self.snap_map(scope, "pre")
+        return self._mover_ite(clauses, cur, old)
+
+    def _mover_ite(self, clauses, cur: Dict[str, str], old: Dict[str, str]) -> str:
+        """Generic mover selection `if c1 then e1 else ... else E` over `clauses`,
+        with `\\old` bound to `old` (the access pre-store) and bare names to `cur`
+        (the access post-store)."""
         expr = str(E_CODE)
         for cl in reversed(clauses):
             cond = self.tr.tr(cl.cond, cur, old)
@@ -673,29 +679,108 @@ class Lowerer:
     def gen_validity(self) -> None:
         """Check mover-specification validity (paper's Validity definition).
 
-        We check condition (3): *an action by one thread cannot change the
-        effect (mover classification) of an action in another thread*.  This is
-        the condition that our per-thread, static mover selection relies on: if
-        it holds, thread t computing the mover of an access from its own local
-        view is sound even though other threads may be interleaving.
+        All four conditions are checked, for every ordered pair of variables
+        X (accessed by thread t) and Y (accessed by thread u), with t != u:
 
-        For each pair (writer variable X, observed variable Y) and distinct
-        threads t != u, we assert that when thread t performs a *well-defined*
-        write to X (moving X to an arbitrary value), the mover thread u would
-        compute for an access to Y is unchanged.  A specification whose movers
-        depend on data another thread can legally mutate is thereby rejected.
+          (1) a right-mover of t commutes to the right of a following non-mover
+              of u;
+          (2) a left-mover of u commutes to the left of a preceding non-mover
+              of t;
+          (3) an action of t does not change the mover u computes;
+          (4) a non-mover of t cannot cause a left-mover of u to block.
 
-        (Conditions (1), (2) and (4) -- the right/left commuting and
-        non-blocking diagrams -- hold for the standard lock, write-guarded and
-        barrier disciplines expressed here; a full encoding of their existential
-        witnesses is left as future work and noted in the README.)
+        Actions are modelled exactly as in the paper: a write to a variable X is
+        <X = v> for an arbitrary local-determined value v (total), and a read is
+        the identity on the shared store.  Because writes are deterministic and
+        their post-values do not depend on the shared store, the existential
+        witness store required by conditions (1), (2), (4) is *constructed*
+        explicitly (apply the two actions in the opposite order), so each
+        condition becomes an ordinary Boogie assertion rather than a quantifier
+        alternation.  Reads and other store-identity actions (failing cas,
+        unstable reads) commute trivially and are omitted from (1),(2),(4).
         """
         self.em.blank()
-        self.em.line("// ==== Mover specification validity: condition (3) ====")
-        writers = [vd for vd in self.prog.vars]
-        for xw in writers:
+        self.em.line("// ==== Mover specification validity (Definition: Validity) ====")
+        for xw in self.prog.vars:
             for yv in self.prog.vars:
                 self._validity3(xw, yv)
+        writable = [vd for vd in self.prog.vars if self._clauses_for(vd.name, "write")]
+        for xw in writable:
+            for yw in writable:
+                self._validity_commute(1, xw, yw)
+                self._validity_commute(2, xw, yw)
+                self._validity_commute(4, xw, yw)
+
+    def _validity_commute(self, num: int, xw: A.VarDecl, yw: A.VarDecl) -> None:
+        """Emit conditions (1), (2), or (4) for the write-pair (X by t, Y by u).
+
+        Let sigma be the pre-store, sigma' = sigma[X := v1], and consider the two
+        write actions A1 = <X := v1> (thread t) and A2 = <Y := v2> (thread u).
+        We assume the condition's mover hypotheses and assert that the two
+        actions produce the same final store in either order (the commuting
+        witness).  For X != Y this holds structurally; for X == Y it forces the
+        two writes to agree, so a spec that lets two threads make conflicting
+        non-both-mover writes to the same location is rejected.
+        """
+        gl = list(self.ti.globals.keys())
+        X, Y = xw.name, yw.name
+        xty, yty = self.ti.globals[X], self.ti.globals[Y]
+        xwrite = self._clauses_for(X, "write")
+        ywrite = self._clauses_for(Y, "write")
+
+        sigma = {**{g: f"s_{g}" for g in gl}}
+        sigmaX = {**sigma, X: "v1"}                       # sigma' = sigma[X:=v1]
+        sigmaXY = {**sigmaX, Y: "v2"}                     # sigma'' = sigma'[Y:=v2]
+        sigmaY = {**sigma, Y: "v2"}                       # sigma[Y:=v2] (for cond 4)
+
+        def m(clauses, tv, cur, old):
+            c = {**cur, "tid": tv}
+            o = {**old, "tid": tv}
+            return self._mover_ite(clauses, c, o)
+
+        moverX_t = m(xwrite, "t", sigmaX, sigma)          # M(A1, t, sigma)
+        if num == 1:
+            h1 = f"leqEff({moverX_t}, {R_CODE})"
+            h2 = f"leqEff({m(ywrite, 'u', sigmaXY, sigmaX)}, {N_CODE})"  # M(A2,u,sigma')<=N
+        elif num == 2:
+            h1 = f"leqEff({moverX_t}, {N_CODE})"
+            h2 = f"leqEff({m(ywrite, 'u', sigmaXY, sigmaX)}, {L_CODE})"  # M(A2,u,sigma')<=L
+        else:  # num == 4
+            h1 = f"leqEff({moverX_t}, {N_CODE})"
+            h2 = f"leqEff({m(ywrite, 'u', sigmaY, sigma)}, {L_CODE})"    # M(A2,u,sigma)<=L
+
+        # Commuting witness: sigma[X:=v1][Y:=v2] equals sigma[Y:=v2][X:=v1].
+        post_XY = {**{g: sigma[g] for g in gl}, X: "v1"}
+        post_XY[Y] = "v2"
+        post_YX = {**{g: sigma[g] for g in gl}, Y: "v2"}
+        post_YX[X] = "v1"
+        eqs = " && ".join(f"({post_XY[g]} == {post_YX[g]})" for g in gl)
+
+        self.em.blank()
+        self.em.line(f"// validity({num}): writes to {X!r} (t) and {Y!r} (u) commute")
+        self.em.line(f"procedure {{:entrypoint}} Valid{num}_{X}_{Y}()")
+        self.em.line("{")
+        self.em.indent()
+        for g in gl:
+            self.em.line(f"var s_{g}: {self.ti.globals[g]};")
+        self.em.line(f"var v1: {xty}; var v2: {yty};")
+        self.em.line("var t: int; var u: int;")
+        self.em.line("assume t > 0 && u > 0 && t != u;")
+        self.em.line(f"assume {h1};")
+        self.em.line(f"assume {h2};")
+        self.em.assert_(
+            eqs, xw.span,
+            f"invalid mover specification: a {self._cond_name(num)} to {X!r} by one "
+            f"thread and a write to {Y!r} by another do not commute "
+            f"(validity condition {num} fails)",
+        )
+        self.em.dedent()
+        self.em.line("}")
+
+    @staticmethod
+    def _cond_name(num: int) -> str:
+        return {1: "right-mover write", 2: "non-mover write",
+                4: "non-mover write"}[num]
 
     def _validity3(self, xw: A.VarDecl, yv: A.VarDecl) -> None:
         gl = list(self.ti.globals.keys())

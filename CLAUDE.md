@@ -69,3 +69,8 @@ stack) plus a client variant and an intentionally-racy `racy_bad.mml`. Expected
 obligation counts live in `README.md` and are asserted by `tests/`. When changing
 `vcgen.py`, re-run `pytest tests/` — the mutation tests guard against the checker
 becoming vacuous (a program that should fail must still fail).
+
+Mover-spec validity checks all four paper conditions (`gen_validity` →
+`_validity3` for (3), `_validity_commute` for (1),(2),(4)). Writes are modelled
+as `<X := v>` (arbitrary store-independent value), so the commuting witness for
+(1),(2),(4) is constructed explicitly and each condition is a plain assertion.

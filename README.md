@@ -73,7 +73,7 @@ client):
 ```console
 $ moverlogic examples/counter.mml
 == examples/counter.mml ==
-verified (9 Boogie proof obligation(s) discharged)
+verified (21 Boogie proof obligation(s) discharged)
 ```
 
 The whole example suite — every file below should verify except the
@@ -83,19 +83,19 @@ intentionally broken one:
 $ moverlogic examples/counter.mml examples/counter_client2.mml \
              examples/spinlock.mml examples/queue.mml examples/stack.mml
 == examples/counter.mml ==
-verified (9 Boogie proof obligation(s) discharged)
+verified (21 Boogie proof obligation(s) discharged)
 
 == examples/counter_client2.mml ==
-verified (9 Boogie proof obligation(s) discharged)
+verified (21 Boogie proof obligation(s) discharged)
 
 == examples/spinlock.mml ==
-verified (7 Boogie proof obligation(s) discharged)
+verified (19 Boogie proof obligation(s) discharged)
 
 == examples/queue.mml ==
-verified (3 Boogie proof obligation(s) discharged)
+verified (6 Boogie proof obligation(s) discharged)
 
 == examples/stack.mml ==
-verified (3 Boogie proof obligation(s) discharged)
+verified (6 Boogie proof obligation(s) discharged)
 ```
 
 The broken example is **rejected**, with the error mapped to the exact racy
@@ -317,9 +317,15 @@ For each program the tool discharges (as separate Boogie procedures):
    post-commit (left-mover) region (left-mover termination).
 3. **Call obligations** (`M-call-*`): callee preconditions hold and callee
    postconditions/effects are composed into the caller.
-4. **Mover-spec validity** (paper's Validity, condition 3): one thread's action
-   cannot change the mover another thread computes — the property that makes
-   per-thread mover selection sound.
+4. **Mover-spec validity** (paper's Validity, all four conditions): for every
+   pair of variables accessed by distinct threads, right-movers commute right of
+   following non-movers (1), left-movers commute left of preceding non-movers
+   (2), an action cannot change the mover another thread computes (3), and a
+   non-mover cannot make a left-mover block (4). Because writes are modelled as
+   `<X := v>` with a store-independent value, the witness store required by
+   (1),(2),(4) is constructed explicitly, so each condition is a plain Boogie
+   assertion. A spec that, say, calls a racy shared write a both-mover is
+   rejected here.
 5. **Run-time state rule** (`M-state`): the guarantee is reflexive (`I ⟹ G`),
    each thread's guarantee is contained in every other thread's rely
    (`G_t ⟹ R_u`), and the initial store establishes each thread's precondition.
@@ -361,11 +367,13 @@ theorem): it never fails an assertion or races.
 
 ## Scope and limitations
 
-* Mover-spec **validity** currently checks condition (3) of the paper's Validity
-  definition (mover stability), which is the condition per-thread mover
-  selection depends on.  The commuting/non-blocking diagrams (1), (2), (4) hold
-  for the standard lock, write-guarded, and barrier disciplines expressed here;
-  a full existential-witness encoding of them is future work.
+* Mover-spec **validity** checks all four conditions (1)–(4) of the paper's
+  Validity definition. Actions are modelled as in the paper — a write is
+  `<X := v>` for an arbitrary local-determined value, a read is a store
+  identity — which subsumes the concrete `acquire`/`release`/`cas` actions
+  (transitions outside a variable's declared discipline get the error effect and
+  are excluded by the conditions' mover hypotheses). Store-identity actions
+  (reads, failing cas, unstable reads) commute trivially and are not enumerated.
 * The paper's calculus omits **frame conditions**; consequently a callee's
   `ensures` must state what it leaves unchanged (e.g. `m == \old(m)`).
 * The `M-while` **left-mover-termination** side condition is enforced with a

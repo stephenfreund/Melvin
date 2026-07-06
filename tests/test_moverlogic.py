@@ -144,7 +144,7 @@ def test_wrong_postcondition_fails():
 
 
 @needs_boogie
-def test_bad_mover_spec_invalidity():
+def test_bad_mover_spec_invalidity_condition3():
     # x's mover depends on x itself, which another thread can change -> validity(3)
     src = """
     var int x  both-mover if x == 0;
@@ -154,3 +154,32 @@ def test_bad_mover_spec_invalidity():
     assert not result.ok
     assert any("validity" in d.message or "invalid" in d.message
                for d in result.diagnostics)
+
+
+@needs_boogie
+def test_bad_mover_spec_invalidity_commuting():
+    # An unconditional both-mover on a shared, written variable violates the
+    # commuting conditions (1)/(2): two threads' writes to x do not commute.
+    src = """
+    var int x  both-mover if true;
+    atomic requires true ensures true f() { x = 1; }
+    thread { f(); }
+    """
+    result = check_source(src, "badcommute.mml")
+    assert not result.ok
+    assert any("validity condition" in d.message for d in result.diagnostics)
+
+
+@needs_boogie
+def test_lock_discipline_is_valid():
+    # The lock discipline must PASS all four validity conditions (they are
+    # vacuous thanks to mutual exclusion), i.e. no false positives.
+    src = r"""
+    var int x  both-mover if m == tid;
+    lock m  write right-mover if \old(m)==0 && m==tid
+            write left-mover  if \old(m)==tid && m==0;
+    atomic requires true ensures x==\old(x)+1 && m==\old(m)
+    f() { acquire(m); t=x; t=t+1; x=t; release(m); }
+    """
+    result = check_source(src, "lockok.mml")
+    assert result.ok, result.render()
