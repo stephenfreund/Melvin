@@ -317,21 +317,90 @@ For each program the tool discharges (as separate Boogie procedures):
    post-commit (left-mover) region (left-mover termination).
 3. **Call obligations** (`M-call-*`): callee preconditions hold and callee
    postconditions/effects are composed into the caller.
-4. **Mover-spec validity** (paper's Validity, all four conditions): for every
-   pair of variables accessed by distinct threads, right-movers commute right of
-   following non-movers (1), left-movers commute left of preceding non-movers
-   (2), an action cannot change the mover another thread computes (3), and a
-   non-mover cannot make a left-mover block (4). Because writes are modelled as
-   `<X := v>` with a store-independent value, the witness store required by
-   (1),(2),(4) is constructed explicitly, so each condition is a plain Boogie
-   assertion. A spec that, say, calls a racy shared write a both-mover is
-   rejected here.
+4. **Mover-spec validity** (paper's Validity, all four conditions): the declared
+   movers really do commute — right-movers commute right of following
+   non-movers (1), left-movers commute left of preceding non-movers (2), an
+   action cannot change the mover another thread computes (3), and a non-mover
+   cannot make a left-mover block (4). See *How validity is checked* below.
 5. **Run-time state rule** (`M-state`): the guarantee is reflexive (`I ⟹ G`),
    each thread's guarantee is contained in every other thread's rely
    (`G_t ⟹ R_u`), and the initial store establishes each thread's precondition.
 
 A program that discharges all obligations **does not go wrong** (Soundness
 theorem): it never fails an assertion or races.
+
+### How validity is checked
+
+Mover-spec validity is a property of the specification `M` alone: it must make
+truthful commuting claims about how one thread's actions reorder against
+another's.  The paper's Validity definition has four conditions, quantified over
+all actions `A₁`, `A₂`, distinct threads `t ≠ u`, and stores.  We check all
+four, one Boogie procedure per ordered pair of variables `(X, Y)`.
+
+**Action model.**  Following the paper, an access is modelled abstractly:
+
+* a **write** to variable `X` is `⟨X := v⟩` — it sets `X` to a value `v` and
+  leaves every other variable unchanged.  Since the source guarantees the
+  right-hand side of a write mentions only thread-local state, `v` is
+  *independent of the shared store*; we model it as an arbitrary Boogie value.
+  This one form subsumes `acquire` (`⟨m := tid⟩` when `m = 0`), `release`
+  (`⟨m := 0⟩`), and a successful `cas` (`⟨X := new⟩` when `X = expected`):
+  transitions that fall outside `X`'s declared discipline simply get the mover
+  `E` (error) and are excluded by each condition's mover hypotheses.
+* a **read** (and a failing `cas`, and an unstable read) is the **identity** on
+  the shared store.  Identity actions commute with everything, so they cannot
+  break conditions (1), (2), (4) and are not enumerated there.
+
+The mover of an action is the exact clause selection
+`M(A, t, σ) = if c₁ then e₁ else … else E`, evaluated with `\old` bound to the
+pre-store and bare names to the post-store, and `tid` bound to the acting thread.
+
+**Conditions (1), (2), (4) — commuting, by explicit witness.**  Each condition
+asks: given `A₁` by `t` then `A₂` by `u` (with certain mover bounds), does there
+*exist* a store `σ‴` witnessing that the two actions can run in the opposite
+order to the same effect?  A raw `∀…∃σ‴…` is hard for SMT — but because our
+writes are deterministic and their values are store-independent, the witness is
+simply "run `A₂` first, then `A₁`", which we **construct explicitly**.  With
+`A₁ = ⟨X := v₁⟩` (thread `t`) and `A₂ = ⟨Y := v₂⟩` (thread `u`), and
+`σ′ = σ[X := v₁]`, the whole condition collapses to: *assume the mover
+hypotheses, then assert the two orders agree.*
+
+| Cond. | Assumed (mover hypotheses)                                   | Asserted (commuting witness)                     |
+|-------|--------------------------------------------------------------|--------------------------------------------------|
+| (1)   | `M(A₁,t,σ) ⊑ R`  and  `M(A₂,u,σ′) ⊑ N`                        | `σ[X:=v₁][Y:=v₂] == σ[Y:=v₂][X:=v₁]`             |
+| (2)   | `M(A₁,t,σ) ⊑ N`  and  `M(A₂,u,σ′) ⊑ L`                        | `σ[X:=v₁][Y:=v₂] == σ[Y:=v₂][X:=v₁]`             |
+| (4)   | `M(A₁,t,σ) ⊑ N`  and  `M(A₂,u,σ)  ⊑ L`  (both evaluated at σ) | `σ[X:=v₁][Y:=v₂] == σ[Y:=v₂][X:=v₁]`             |
+
+The asserted equality is a Boogie tautology when `X ≠ Y` (independent updates),
+and reduces to `v₁ == v₂` when `X = Y`.  So for the same variable the check says
+"two threads may not make *conflicting* (different-valued) writes with these
+mover bounds" — which is exactly what forbids, e.g., two concurrent both-mover
+writes to one location.  The mover hypotheses do the real filtering: for a
+lock-protected `x` (`both-mover if m == tid`) the two would need `m == t` and
+`m == u` at once (`t ≠ u`), so the hypotheses are unsatisfiable and the
+condition holds vacuously; for a lock-free `buf` (`non-mover`) a right-mover
+hypothesis `⊑ R` is already false, so (1) is vacuous and the lone non-mover
+commit never has to commute.
+
+**Condition (3) — mover stability.**  This one has no existential: *an action of
+`t` must not change the mover `u` computes.*  For each pair `(X, Y)` and
+`t ≠ u`, we take a well-defined write of `X` by `t` (assume its own mover is not
+`E`) moving `X` to an arbitrary `v`, and assert that the mover `u` would assign
+to an access of `Y` is the same before and after — for both a read and a write
+of `Y`:
+
+```
+assume  M(⟨X:=v⟩, t, σ) != E            // t's action is a real, well-defined step
+assert  M(read  Y, u, σ) == M(read  Y, u, σ[X:=v])
+assert  M(write Y, u, σ) == M(write Y, u, σ[X:=v])
+```
+
+This rejects any specification whose movers depend on data another thread can
+legally mutate (e.g. `both-mover if x == 0`, where writing `x` silently changes
+`x`'s own mover), which is the property our per-thread, static mover selection
+relies on for soundness.  It holds for the lock disciplines because their movers
+depend only on lock variables, and the acquire/release protocol keeps those
+consistent across the threads that may touch them.
 
 ---
 
