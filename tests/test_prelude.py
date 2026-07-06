@@ -1,4 +1,4 @@
-"""Unit tests for moverlogic.prelude."""
+"""Unit tests for melvin.prelude."""
 
 import itertools
 import os
@@ -7,9 +7,9 @@ import tempfile
 
 import pytest
 
-from moverlogic import prelude as P
-from moverlogic.effects import Effect, seq, leq
-from moverlogic.boogie_backend import BoogieBackend
+from melvin import prelude as P
+from melvin.effects import Effect, seq, leq
+from melvin.boogie_backend import BoogieBackend
 
 from _util import needs_boogie
 

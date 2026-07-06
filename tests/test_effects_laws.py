@@ -11,7 +11,7 @@ import itertools
 
 import pytest
 
-from moverlogic.effects import Effect, seq, star, join, leq
+from melvin.effects import Effect, seq, star, join, leq
 
 ALL = list(Effect)
 TRIPLES = list(itertools.product(ALL, ALL, ALL))

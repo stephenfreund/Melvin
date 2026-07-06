@@ -1,9 +1,9 @@
-"""Unit tests for moverlogic.lexer."""
+"""Unit tests for melvin.lexer."""
 
 import pytest
 
-from moverlogic.lexer import lex, Lexer, KEYWORDS
-from moverlogic.diagnostics import LexError
+from melvin.lexer import lex, Lexer, KEYWORDS
+from melvin.diagnostics import LexError
 
 
 def kinds_texts(src):

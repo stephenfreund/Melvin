@@ -1,11 +1,11 @@
-"""Unit tests for moverlogic.types."""
+"""Unit tests for melvin.types."""
 
 import pytest
 
-from moverlogic.parser import parse
-from moverlogic.types import check_types, type_to_boogie, TVar, unify, resolve
-from moverlogic.ast_nodes import TypeExpr, Assign
-from moverlogic.diagnostics import TypeError_, Span, Position
+from melvin.parser import parse
+from melvin.types import check_types, type_to_boogie, TVar, unify, resolve
+from melvin.ast_nodes import TypeExpr, Assign
+from melvin.diagnostics import TypeError_, Span, Position
 
 SP = Span("t", Position(1, 1), Position(1, 1))
 

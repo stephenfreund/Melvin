@@ -1,9 +1,9 @@
-"""Unit tests for moverlogic.diagnostics."""
+"""Unit tests for melvin.diagnostics."""
 
 import pytest
 
-from moverlogic.diagnostics import (
-    Position, Span, NO_SPAN, MoverLogicError, LexError, ParseError, TypeError_,
+from melvin.diagnostics import (
+    Position, Span, NO_SPAN, MelvinError, LexError, ParseError, TypeError_,
     Diagnostic,
 )
 
@@ -29,17 +29,17 @@ def test_no_span_sentinel():
 
 def test_error_render_with_and_without_span():
     span = Span("f.mml", Position(4, 2), Position(4, 3))
-    e = MoverLogicError("boom", span)
+    e = MelvinError("boom", span)
     assert e.render() == "f.mml:4:2: error: boom"
     assert "error: boom" in str(e)
-    e2 = MoverLogicError("no location")
+    e2 = MelvinError("no location")
     assert e2.render() == "error: no location"
 
 
 def test_error_subclasses():
     for cls in (LexError, ParseError, TypeError_):
         e = cls("msg")
-        assert isinstance(e, MoverLogicError)
+        assert isinstance(e, MelvinError)
 
 
 def test_diagnostic_render_plain():

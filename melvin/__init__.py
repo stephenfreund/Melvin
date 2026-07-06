@@ -1,4 +1,4 @@
-"""Mover Logic: a verifier for reduction-based rely-guarantee reasoning.
+"""Melvin: a verifier for Mover Logic (reduction-based rely-guarantee reasoning).
 
 A Python implementation of the Mover Logic system (Flanagan & Freund), which
 extends rely-guarantee logic with Lipton reduction so that atomic functions get

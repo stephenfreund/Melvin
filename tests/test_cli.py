@@ -1,13 +1,13 @@
-"""Unit tests for moverlogic.cli (argument handling + exit codes).
+"""Unit tests for melvin.cli (argument handling + exit codes).
 
 These mock the checker so they run without a Boogie install.
 """
 
 import pytest
 
-from moverlogic import cli
-from moverlogic.checker import CheckResult
-from moverlogic.boogie_backend import DEFAULT_TIMEOUT
+from melvin import cli
+from melvin.checker import CheckResult
+from melvin.boogie_backend import DEFAULT_TIMEOUT
 
 
 @pytest.fixture
@@ -62,7 +62,7 @@ def test_multiple_files_aggregate_status(fake_check):
     results = iter([CheckResult(ok=True), CheckResult(ok=False)])
     calls = []
 
-    import moverlogic.cli as m
+    import melvin.cli as m
 
     def _check(path, **kwargs):
         calls.append(path)
@@ -88,6 +88,6 @@ def test_show_bpl_prints_generated_program(fake_check, capsys):
 def test_main_module_entrypoint(monkeypatch):
     import runpy
     import sys
-    monkeypatch.setattr(sys, "argv", ["moverlogic"])   # no files -> argparse exit
+    monkeypatch.setattr(sys, "argv", ["melvin"])   # no files -> argparse exit
     with pytest.raises(SystemExit):
-        runpy.run_module("moverlogic.__main__", run_name="__main__")
+        runpy.run_module("melvin.__main__", run_name="__main__")

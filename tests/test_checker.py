@@ -1,9 +1,9 @@
-"""Unit tests for moverlogic.checker (driver + result rendering)."""
+"""Unit tests for melvin.checker (driver + result rendering)."""
 
 import pytest
 
-from moverlogic.checker import check_source, check_program, CheckResult
-from moverlogic.diagnostics import Diagnostic, Span, Position
+from melvin.checker import check_source, check_program, CheckResult
+from melvin.diagnostics import Diagnostic, Span, Position
 
 from _util import EXAMPLES, needs_boogie
 

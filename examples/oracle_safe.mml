@@ -1,6 +1,6 @@
 // Oracle program (safe).  Two threads each atomically add 2 to a lock-protected
 // counter and assert even(x) at yield points.  The verifier accepts it; the
-// reference interpreter (moverlogic.interp) confirms no interleaving reaches a
+// reference interpreter (melvin.interp) confirms no interleaving reaches a
 // failed assertion.  Used to cross-check the verifier against the operational
 // semantics.
 var int x  both-mover if m == tid;

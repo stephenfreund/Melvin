@@ -1,10 +1,10 @@
-"""Unit tests for moverlogic.effects -- the mover-effect lattice."""
+"""Unit tests for melvin.effects -- the mover-effect lattice."""
 
 import itertools
 
 import pytest
 
-from moverlogic.effects import Effect, Y, B, R, L, N, E, seq, star, join, join_all, \
+from melvin.effects import Effect, Y, B, R, L, N, E, seq, star, join, join_all, \
     leq, seq_all, is_reducible
 
 ALL = [Y, B, R, L, N, E]

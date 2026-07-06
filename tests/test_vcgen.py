@@ -1,13 +1,13 @@
-"""Unit tests for moverlogic.vcgen (translation + lowering internals)."""
+"""Unit tests for melvin.vcgen (translation + lowering internals)."""
 
 import pytest
 
-from moverlogic.parser import parse, Parser
-from moverlogic.lexer import lex
-from moverlogic.types import check_types
-from moverlogic.effects import Effect
-from moverlogic.vcgen import Translator, Lowerer, lower_program
-from moverlogic.diagnostics import TypeError_
+from melvin.parser import parse, Parser
+from melvin.lexer import lex
+from melvin.types import check_types
+from melvin.effects import Effect
+from melvin.vcgen import Translator, Lowerer, lower_program
+from melvin.diagnostics import TypeError_
 
 
 def tr_of(text, cur=None, old=None):
@@ -114,7 +114,7 @@ def test_stmt_static_read_write_local():
         atomic requires true ensures true f() { t = x; x = t; t = t + 1; }
     """
     low, prog = _lowerer(src)
-    from moverlogic.vcgen import _Ctx
+    from melvin.vcgen import _Ctx
     ctx = _Ctx("fn:f", prog.find_func("f"), atomic=True)
     body = prog.find_func("f").body
     assert low._stmt_static(body[0], ctx) == Effect.B     # read of x (both-mover)
@@ -201,7 +201,7 @@ def test_stmt_static_control_flow_and_call():
         }
     """
     low, prog = _lowerer(src)
-    from moverlogic.vcgen import _Ctx
+    from melvin.vcgen import _Ctx
     ctx = _Ctx("fn:f", prog.find_func("f"), atomic=True)
     body = prog.find_func("f").body
     assert low._stmt_static(body[0], ctx) == Effect.B     # if: join(B, B)

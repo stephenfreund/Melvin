@@ -8,7 +8,7 @@ import pathlib
 
 import pytest
 
-from moverlogic.checker import check_source
+from melvin.checker import check_source
 
 from _util import EXAMPLES, needs_boogie
 

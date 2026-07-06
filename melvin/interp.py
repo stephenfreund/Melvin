@@ -375,7 +375,7 @@ def can_go_wrong(prog: A.Program, **kwargs) -> ExploreResult:
 
 
 # ---------------------------------------------------------------------------
-# Command-line interface: `moverlogic-run FILE` / `python -m moverlogic.interp`
+# Command-line interface: `melvin-run FILE` / `python -m melvin.interp`
 # ---------------------------------------------------------------------------
 
 def main(argv=None) -> int:
@@ -383,10 +383,10 @@ def main(argv=None) -> int:
     import sys
     from .parser import parse
     from .types import check_types
-    from .diagnostics import MoverLogicError
+    from .diagnostics import MelvinError
 
     ap = argparse.ArgumentParser(
-        prog="moverlogic-run",
+        prog="melvin-run",
         description="Run a Mover Logic program under all thread interleavings "
                     "(reference operational semantics) and report whether any "
                     "interleaving can go wrong (fail an assertion / reach `wrong`).",
@@ -403,7 +403,7 @@ def main(argv=None) -> int:
             src = f.read()
         prog = parse(src, args.file)
         check_types(prog)                      # reuse the front end for errors
-    except (OSError, MoverLogicError) as e:
+    except (OSError, MelvinError) as e:
         print(getattr(e, "render", lambda: str(e))())
         return 2
 

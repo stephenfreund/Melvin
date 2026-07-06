@@ -1,12 +1,12 @@
-"""Unit tests for moverlogic.parser."""
+"""Unit tests for melvin.parser."""
 
 import pytest
 
-from moverlogic import ast_nodes as A
-from moverlogic.effects import Effect
-from moverlogic.parser import parse, Parser
-from moverlogic.lexer import lex
-from moverlogic.diagnostics import ParseError
+from melvin import ast_nodes as A
+from melvin.effects import Effect
+from melvin.parser import parse, Parser
+from melvin.lexer import lex
+from melvin.diagnostics import ParseError
 
 
 def parse_expr(text):

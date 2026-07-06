@@ -3,24 +3,24 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "moverlogic"
+name = "melvin"
 version = "0.1.0"
-description = "A verifier for Mover Logic (reduction-based rely-guarantee) using Boogie"
+description = "Melvin: a verifier for Mover Logic (reduction-based rely-guarantee) using Boogie"
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Mover Logic implementation" }]
+authors = [{ name = "Melvin implementation" }]
 keywords = ["verification", "concurrency", "reduction", "rely-guarantee", "boogie"]
 
 [project.optional-dependencies]
 test = ["pytest>=7.0"]
 
 [project.scripts]
-moverlogic = "moverlogic.cli:main"
-moverlogic-run = "moverlogic.interp:main"
+melvin = "melvin.cli:main"
+melvin-run = "melvin.interp:main"
 
 [tool.setuptools]
-packages = ["moverlogic"]
+packages = ["melvin"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

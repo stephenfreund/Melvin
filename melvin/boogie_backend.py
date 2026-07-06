@@ -87,7 +87,7 @@ class BoogieBackend:
 
     @staticmethod
     def _discover() -> str:
-        env = os.environ.get("MOVERLOGIC_BOOGIE")
+        env = os.environ.get("MELVIN_BOOGIE")
         if env and os.path.exists(env):
             return env
         for cand in ("boogie", "Boogie"):
@@ -104,7 +104,7 @@ class BoogieBackend:
             if os.path.exists(g):
                 return g
         raise BoogieError(
-            "could not find the Boogie executable; set MOVERLOGIC_BOOGIE to its path"
+            "could not find the Boogie executable; set MELVIN_BOOGIE to its path"
         )
 
     def run_raw(self, bpl_path: str, timeout: int = 120) -> subprocess.CompletedProcess:

@@ -1,7 +1,7 @@
-"""Unit tests for moverlogic.ast_nodes helper accessors."""
+"""Unit tests for melvin.ast_nodes helper accessors."""
 
-from moverlogic.parser import parse
-from moverlogic import ast_nodes as A
+from melvin.parser import parse
+from melvin import ast_nodes as A
 
 
 def test_program_accessors():

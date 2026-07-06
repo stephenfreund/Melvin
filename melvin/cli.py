@@ -1,4 +1,4 @@
-"""Command-line interface: `python -m moverlogic file.mml [...]`."""
+"""Command-line interface: `python -m melvin file.mml [...]`."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ EXIT_TIMEOUT = 2
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
-        prog="moverlogic",
+        prog="melvin",
         description="Verify Mover Logic Language (.mll) programs using Boogie.",
     )
     ap.add_argument("files", nargs="+", help="MLL source files to verify")

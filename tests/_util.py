@@ -4,7 +4,7 @@ import pathlib
 
 import pytest
 
-from moverlogic.boogie_backend import BoogieBackend, BoogieError
+from melvin.boogie_backend import BoogieBackend, BoogieError
 
 EXAMPLES = pathlib.Path(__file__).resolve().parent.parent / "examples"
 

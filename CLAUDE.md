@@ -4,26 +4,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Python implementation of **Mover Logic** — a reduction-based rely-guarantee
-program logic (from the `../reduction-rg-logic` manuscript, `main.pdf`/`main.tex`)
-— that verifies concurrent programs by lowering proof obligations to **Boogie**.
+**Melvin**, a Python implementation of **Mover Logic** — a reduction-based
+rely-guarantee program logic (from the `../reduction-rg-logic` manuscript,
+`main.pdf`/`main.tex`) — that verifies concurrent programs by lowering proof
+obligations to **Boogie**.
 Architecturally inspired by the Anchor / Synchronicity verifiers in
 `../Synchronicity`.
 
 ## Commands
 
 ```bash
-pip install -e ".[test]"                         # install (adds `moverlogic`, `moverlogic-run`)
-export MOVERLOGIC_BOOGIE=/path/to/boogie          # if boogie isn't on PATH
-moverlogic examples/counter.mml                   # verify a program
-moverlogic examples/counter.mml --show-bpl        # print generated Boogie
-moverlogic examples/counter.mml --emit-bpl out.bpl   # save generated Boogie
-moverlogic-run examples/oracle_safe.mml           # execute under all interleavings
+pip install -e ".[test]"                         # install (adds `melvin`, `melvin-run`)
+export MELVIN_BOOGIE=/path/to/boogie          # if boogie isn't on PATH
+melvin examples/counter.mml                   # verify a program
+melvin examples/counter.mml --show-bpl        # print generated Boogie
+melvin examples/counter.mml --emit-bpl out.bpl   # save generated Boogie
+melvin-run examples/oracle_safe.mml           # execute under all interleavings
 pytest tests/ -q                                  # run tests (prover tests self-skip)
 pytest tests/test_effects.py::test_seq_matches_paper_table   # a single test
 ```
 
-Boogie discovery order: `MOVERLOGIC_BOOGIE` env var → `boogie`/`Boogie` on PATH
+Boogie discovery order: `MELVIN_BOOGIE` env var → `boogie`/`Boogie` on PATH
 → a fallback path in `boogie_backend.py`. There is **no** real Boogie Python
 binding (the PyPI `boogie` package is an unrelated Django library); the tool
 shells out to the executable.
@@ -40,8 +41,8 @@ shells out to the executable.
 | `prelude.py` | fixed Boogie prelude: the effect algebra as Boogie functions, `even`, immutable `List`, `Optional` |
 | `vcgen.py`   | the core — lowers each Mover Logic obligation to a Boogie procedure |
 | `boogie_backend.py` | runs Boogie; `Emitter` records an obligation per emitted `assert`, keyed by line, so failures map back to source |
-| `checker.py` / `cli.py` | driver and `moverlogic` verify CLI |
-| `interp.py`  | reference small-step interpreter + `moverlogic-run`; independent differential oracle for the verifier (explores all interleavings, detects reachable `wrong`) |
+| `checker.py` / `cli.py` | driver and `melvin` verify CLI |
+| `interp.py`  | reference small-step interpreter + `melvin-run`; independent differential oracle for the verifier (explores all interleavings, detects reachable `wrong`) |
 
 ### Key design points (read before editing `vcgen.py`)
 
@@ -73,7 +74,7 @@ unit-test module per source file (`tests/test_<module>.py`) plus end-to-end
 `tests/test_examples.py`; `tests/_util.py` holds the `needs_boogie` skip marker.
 Boogie-dependent tests self-skip when the prover is absent. Run `pytest tests/`;
 mutation tests guard against the checker becoming vacuous (a program that should
-fail must still fail). Coverage is ~96% (`pytest --cov=moverlogic`).
+fail must still fail). Coverage is ~96% (`pytest --cov=melvin`).
 
 Boogie runs under a wall-clock timeout (`boogie_backend.DEFAULT_TIMEOUT`, 5 min;
 `--timeout` on the CLI). A timeout yields `CheckResult.timed_out=True` and CLI

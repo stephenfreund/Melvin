@@ -38,7 +38,7 @@ class Span:
 NO_SPAN = Span("<synthetic>", Position(0, 0), Position(0, 0))
 
 
-class MoverLogicError(Exception):
+class MelvinError(Exception):
     """Base class for all user-facing errors (lexing, parsing, typing, ...)."""
 
     def __init__(self, message: str, span: Optional[Span] = None):
@@ -51,15 +51,15 @@ class MoverLogicError(Exception):
         return f"{loc}error: {self.message}"
 
 
-class LexError(MoverLogicError):
+class LexError(MelvinError):
     pass
 
 
-class ParseError(MoverLogicError):
+class ParseError(MelvinError):
     pass
 
 
-class TypeError_(MoverLogicError):
+class TypeError_(MelvinError):
     pass
 
 

@@ -1,5 +1,5 @@
 """Differential-oracle tests: cross-check the verifier against an independent
-reference interpreter (moverlogic.interp) that runs the operational semantics
+reference interpreter (melvin.interp) that runs the operational semantics
 under all interleavings.
 
 The verifier's soundness theorem says a verified program does not go wrong, so
@@ -10,9 +10,9 @@ also check the interpreter itself on hand-built cases.
 
 import pytest
 
-from moverlogic.parser import parse
-from moverlogic.interp import Interpreter, can_go_wrong, main as run_main
-from moverlogic.checker import check_source
+from melvin.parser import parse
+from melvin.interp import Interpreter, can_go_wrong, main as run_main
+from melvin.checker import check_source
 
 from _util import EXAMPLES, needs_boogie
 
@@ -111,7 +111,7 @@ def test_immutable_list_semantics():
 
 
 def test_no_threads_raises():
-    from moverlogic.interp import InterpError
+    from melvin.interp import InterpError
     with pytest.raises(InterpError):
         Interpreter(parse("atomic requires true ensures true f() { skip; }")).explore()
 
@@ -171,8 +171,8 @@ def test_run_cli_parse_error(tmp_path, capsys):
 
 # ------------------------------------------------- interpreter expr eval
 
-from moverlogic.lexer import lex as _lex
-from moverlogic.parser import Parser as _Parser
+from melvin.lexer import lex as _lex
+from melvin.parser import Parser as _Parser
 
 
 def _ev(text, store=None, tid=1):

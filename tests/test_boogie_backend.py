@@ -1,14 +1,14 @@
-"""Unit tests for moverlogic.boogie_backend (Emitter, parsing, discovery, timeout)."""
+"""Unit tests for melvin.boogie_backend (Emitter, parsing, discovery, timeout)."""
 
 import subprocess
 import types
 
 import pytest
 
-from moverlogic.boogie_backend import (
+from melvin.boogie_backend import (
     Emitter, Obligation, BoogieBackend, BoogieError, VerifyResult, DEFAULT_TIMEOUT,
 )
-from moverlogic.diagnostics import Span, Position
+from melvin.diagnostics import Span, Position
 
 
 def span(line):
@@ -155,13 +155,13 @@ def test_interpret_unmapped_error_line_still_reported():
 def test_discovery_via_env(monkeypatch, tmp_path):
     fake = tmp_path / "boogie"
     fake.write_text("#!/bin/sh\n")
-    monkeypatch.setenv("MOVERLOGIC_BOOGIE", str(fake))
+    monkeypatch.setenv("MELVIN_BOOGIE", str(fake))
     b = BoogieBackend()
     assert b.boogie_path == str(fake)
 
 
 def test_discovery_failure(monkeypatch):
-    monkeypatch.delenv("MOVERLOGIC_BOOGIE", raising=False)
+    monkeypatch.delenv("MELVIN_BOOGIE", raising=False)
     monkeypatch.setattr("shutil.which", lambda name: None)
     monkeypatch.setattr("os.path.exists", lambda p: False)
     with pytest.raises(BoogieError):

@@ -9,7 +9,7 @@ from typing import List, Optional
 
 from .ast_nodes import Program
 from .boogie_backend import BoogieBackend, Emitter, DEFAULT_TIMEOUT
-from .diagnostics import Diagnostic, MoverLogicError
+from .diagnostics import Diagnostic, MelvinError
 from .parser import parse
 from .types import check_types
 from .vcgen import lower_program
@@ -45,12 +45,12 @@ def check_source(
     timeout: int = DEFAULT_TIMEOUT,
 ) -> CheckResult:
     source_lines = source.splitlines()
-    # -- front end: parse + type-check + lower (may raise MoverLogicError) ----
+    # -- front end: parse + type-check + lower (may raise MelvinError) ----
     try:
         prog = parse(source, filename)
         ti = check_types(prog)
         emitter = lower_program(prog, ti)
-    except MoverLogicError as e:
+    except MelvinError as e:
         return CheckResult(
             ok=False,
             diagnostics=[Diagnostic(e.span, e.message)],
@@ -65,7 +65,7 @@ def check_source(
         with open(bpl_path, "w") as f:
             f.write(boogie_text)
     else:
-        fd, bpl_path = tempfile.mkstemp(suffix=".bpl", prefix="moverlogic_")
+        fd, bpl_path = tempfile.mkstemp(suffix=".bpl", prefix="melvin_")
         os.close(fd)
 
     try:

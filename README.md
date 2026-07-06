@@ -1,8 +1,9 @@
-# Mover Logic
+# Melvin
 
-A verifier for **Mover Logic** — the reduction-based rely-guarantee program
-logic of Flanagan & Freund — implemented in Python with **Boogie** as the
-theorem prover.
+**Melvin** is a verifier for **Mover Logic** — the reduction-based
+rely-guarantee program logic of
+[Flanagan & Freund (ECOOP 2024)](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.ECOOP.2024.16)
+— implemented in Python with **Boogie** as the theorem prover.
 
 Mover Logic extends rely-guarantee (RG) logic with Lipton's theory of
 *reduction*.  By proving that a function is **atomic** (its body is a single
@@ -12,9 +13,9 @@ postconditions that plain RG logic forces on shared-memory code.  This
 "disentangles" a library's specification from any particular client's data
 invariant and synchronization discipline.
 
-This tool follows the architecture of the **Anchor**/**Synchronicity**
-verifiers: it parses a small concurrent language, builds an AST, type-checks it,
-lowers the Mover Logic proof obligations to Boogie verification conditions, runs
+Melvin follows the architecture of the **Anchor**/**Synchronicity** verifiers:
+it parses a small concurrent language, builds an AST, type-checks it, lowers
+the Mover Logic proof obligations to Boogie verification conditions, runs
 Boogie, and maps prover failures back to the original source location.
 
 ```
@@ -36,10 +37,10 @@ Boogie, and maps prover failures back to the original source location.
      on your `PATH`), or
    * download a Boogie release, or use the copy bundled with the Anchor /
      Synchronicity distributions.
-2. Install this package (adds a `moverlogic` command):
+2. Install this package (adds a `melvin` command):
 
    ```bash
-   cd MoverLogic
+   cd Melvin
    pip install -e .            # or: pip install -e ".[test]" for the test deps
    ```
 
@@ -47,34 +48,34 @@ Boogie, and maps prover failures back to the original source location.
    your `PATH`):
 
    ```bash
-   export MOVERLOGIC_BOOGIE=/path/to/boogie
+   export MELVIN_BOOGIE=/path/to/boogie
    ```
 
-   Boogie is located, in order, from `MOVERLOGIC_BOOGIE`, then `boogie`/`Boogie`
+   Boogie is located, in order, from `MELVIN_BOOGIE`, then `boogie`/`Boogie`
    on `PATH`, then a bundled fallback path.
 
 ## Running it
 
 ```bash
-moverlogic examples/counter.mml                 # verify one program
-moverlogic examples/*.mml                        # verify several
-python -m moverlogic examples/counter.mml        # equivalent, no console script
-moverlogic examples/counter.mml --show-bpl       # also print the generated Boogie
-moverlogic examples/counter.mml --emit-bpl out.bpl   # save the generated Boogie
-moverlogic --timeout 60 examples/counter.mml     # cap Boogie at 60s for this file
+melvin examples/counter.mml                 # verify one program
+melvin examples/*.mml                        # verify several
+python -m melvin examples/counter.mml        # equivalent, no console script
+melvin examples/counter.mml --show-bpl       # also print the generated Boogie
+melvin examples/counter.mml --emit-bpl out.bpl   # save the generated Boogie
+melvin --timeout 60 examples/counter.mml     # cap Boogie at 60s for this file
 ```
 
 ### Running a program (the reference interpreter)
 
 Besides *verifying* a program, you can *run* it under the reference operational
-semantics with `moverlogic-run`.  It explores **all thread interleavings** and
+semantics with `melvin-run`.  It explores **all thread interleavings** and
 reports whether any of them can go wrong (fail an assertion or reach `wrong`):
 
 ```console
-$ moverlogic-run examples/oracle_safe.mml
+$ melvin-run examples/oracle_safe.mml
 SAFE: no interleaving reaches `wrong` (explored 837 states, exhaustive).
 
-$ moverlogic-run examples/oracle_unsafe.mml --trace
+$ melvin-run examples/oracle_unsafe.mml --trace
 UNSAFE: some interleaving reaches `wrong` (explored 11 states).
   interleaving (thread:next-step):
     t2:Call_ -> t2:Yield -> t2:Assert -> t2:Call_ -> t2:Acquire -> ...
@@ -92,7 +93,7 @@ implementation is validated*).
 time it is killed and the file is reported as timed out (not crashed):
 
 ```console
-$ moverlogic --timeout 5 hard.mml ; echo "exit=$?"
+$ melvin --timeout 5 hard.mml ; echo "exit=$?"
 == hard.mml ==
 verification timed out:
 error: verification timed out after 5s (raise the limit with --timeout)
@@ -109,7 +110,7 @@ Verify the running example (an atomic, lock-protected counter with an `even(x)`
 client):
 
 ```console
-$ moverlogic examples/counter.mml
+$ melvin examples/counter.mml
 == examples/counter.mml ==
 verified (21 Boogie proof obligation(s) discharged)
 ```
@@ -118,7 +119,7 @@ The whole example suite — every file below should verify except the
 intentionally broken one:
 
 ```console
-$ moverlogic examples/counter.mml examples/counter_client2.mml \
+$ melvin examples/counter.mml examples/counter_client2.mml \
              examples/spinlock.mml examples/queue.mml examples/stack.mml
 == examples/counter.mml ==
 verified (21 Boogie proof obligation(s) discharged)
@@ -140,7 +141,7 @@ The broken example is **rejected**, with the error mapped to the exact racy
 line (a write/read of `x` performed without holding the lock):
 
 ```console
-$ moverlogic examples/racy_bad.mml ; echo "exit=$?"
+$ melvin examples/racy_bad.mml ; echo "exit=$?"
 == examples/racy_bad.mml ==
 racy_bad.mml:18:3: error: read of 'x' is not permitted here by its mover specification (possible data race)
       t = x;          // <-- race: reads x without holding m
@@ -176,7 +177,7 @@ kinds of checks go beyond self-consistency:
 
 ### 1. Differential oracle against the operational semantics — the biggest win
 
-`moverlogic/interp.py` is a from-scratch small-step interpreter of MLL with an
+`melvin/interp.py` is a from-scratch small-step interpreter of MLL with an
 explicit-state scheduler that explores *all* thread interleavings and detects
 any reachable `wrong`. It is a much simpler, independent implementation of the
 semantics, so it is a trustworthy cross-check of the whole verifier pipeline.
@@ -226,7 +227,7 @@ language constructs, so code generation never emits malformed Boogie.
 > **On "Boogie Python bindings":** there is no official Python binding for the
 > Boogie verifier — the `boogie` package on PyPI is an unrelated Django helper.
 > This tool therefore invokes the Boogie executable through a small, isolated
-> backend (`moverlogic/boogie_backend.py`); a real binding could replace it
+> backend (`melvin/boogie_backend.py`); a real binding could replace it
 > without touching the rest of the pipeline.
 
 ---
@@ -527,17 +528,17 @@ consistent across the threads that may touch them.
 
 | Module                       | Responsibility                                    |
 |------------------------------|---------------------------------------------------|
-| `moverlogic/lexer.py`        | tokenizer                                         |
-| `moverlogic/parser.py`       | recursive-descent parser → AST                    |
-| `moverlogic/ast_nodes.py`    | AST with source spans                             |
-| `moverlogic/types.py`        | type inference + action classification            |
-| `moverlogic/effects.py`      | the six-element effect lattice (`;`, `*`, `⊔`)    |
-| `moverlogic/prelude.py`      | fixed Boogie prelude (effect algebra, lists, ...) |
-| `moverlogic/vcgen.py`        | lowering Mover Logic obligations to Boogie        |
-| `moverlogic/boogie_backend.py` | run Boogie, map failures back to source         |
-| `moverlogic/checker.py`      | top-level driver                                  |
-| `moverlogic/cli.py`          | `moverlogic` command-line interface (verify)      |
-| `moverlogic/interp.py`       | reference interpreter + `moverlogic-run` (execute + oracle) |
+| `melvin/lexer.py`        | tokenizer                                         |
+| `melvin/parser.py`       | recursive-descent parser → AST                    |
+| `melvin/ast_nodes.py`    | AST with source spans                             |
+| `melvin/types.py`        | type inference + action classification            |
+| `melvin/effects.py`      | the six-element effect lattice (`;`, `*`, `⊔`)    |
+| `melvin/prelude.py`      | fixed Boogie prelude (effect algebra, lists, ...) |
+| `melvin/vcgen.py`        | lowering Mover Logic obligations to Boogie        |
+| `melvin/boogie_backend.py` | run Boogie, map failures back to source         |
+| `melvin/checker.py`      | top-level driver                                  |
+| `melvin/cli.py`          | `melvin` command-line interface (verify)      |
+| `melvin/interp.py`       | reference interpreter + `melvin-run` (execute + oracle) |
 
 ---
 
@@ -562,6 +563,13 @@ consistent across the threads that may touch them.
 
 ## Reference
 
-Based on *Mover Logic: A Concurrent Program Logic based on Reduction* (the
-`reduction-rg-logic` manuscript), and inspired architecturally by the Anchor and
-Synchronicity verifiers.
+Melvin implements the logic of:
+
+> Cormac Flanagan and Stephen N. Freund.
+> *Mover Logic: A Concurrent Program Logic for Reduction and Rely-Guarantee
+> Reasoning.* In 38th European Conference on Object-Oriented Programming
+> (ECOOP 2024). Leibniz International Proceedings in Informatics (LIPIcs),
+> Volume 313, pp. 16:1–16:29, Schloss Dagstuhl – Leibniz-Zentrum für
+> Informatik (2024). <https://doi.org/10.4230/LIPIcs.ECOOP.2024.16>
+
+It is inspired architecturally by the Anchor and Synchronicity verifiers.
