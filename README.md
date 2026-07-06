@@ -64,6 +64,29 @@ moverlogic examples/counter.mml --emit-bpl out.bpl   # save the generated Boogie
 moverlogic --timeout 60 examples/counter.mml     # cap Boogie at 60s for this file
 ```
 
+### Running a program (the reference interpreter)
+
+Besides *verifying* a program, you can *run* it under the reference operational
+semantics with `moverlogic-run`.  It explores **all thread interleavings** and
+reports whether any of them can go wrong (fail an assertion or reach `wrong`):
+
+```console
+$ moverlogic-run examples/oracle_safe.mml
+SAFE: no interleaving reaches `wrong` (explored 837 states, exhaustive).
+
+$ moverlogic-run examples/oracle_unsafe.mml --trace
+UNSAFE: some interleaving reaches `wrong` (explored 11 states).
+  interleaving (thread:next-step):
+    t2:Call_ -> t2:Yield -> t2:Assert -> t2:Call_ -> t2:Acquire -> ...
+```
+
+`--max-states N` bounds the search (reported as `UNKNOWN` if hit); `--trace`
+prints an interleaving that reaches `wrong`. Only complete, thread-bearing
+programs can be run (functions alone are not executed). Exit codes: `0` safe,
+`1` a `wrong` is reachable, `2` a front-end error / no threads, `3` bound hit.
+This interpreter is also the verifier's differential oracle (see *How the
+implementation is validated*).
+
 **Timeouts.** Each file gets a wall-clock verification budget (default **300 s =
 5 minutes**), adjustable with `--timeout SECONDS`.  If Boogie does not finish in
 time it is killed and the file is reported as timed out (not crashed):
@@ -143,7 +166,38 @@ end-to-end suite (`tests/test_examples.py`) that verifies every example and
 checks that the broken ones are rejected with the right diagnostic. Boogie-
 dependent tests self-skip if Boogie cannot be located, so the effect-algebra,
 lexer, parser, type-checker, and code-generation tests still run without a
-prover installed.
+prover installed. There are ~270 tests at ~96% line coverage.
+
+## How the implementation is validated
+
+Unit tests mostly check the code against itself. To gain confidence that the
+tool implements the *analysis* correctly, several checks compare it against
+independent ground truth:
+
+* **Differential oracle against the operational semantics.** `moverlogic/interp.py`
+  is a from-scratch small-step interpreter of MLL with an explicit-state
+  scheduler that explores *all* thread interleavings and detects any reachable
+  `wrong`. The verifier's soundness theorem says a verified program cannot go
+  wrong, so `tests/test_semantics_oracle.py` asserts that for every program the
+  verifier accepts, the interpreter finds no reachable `wrong` — and for a
+  matched *unsafe* variant, the verifier rejects **and** the interpreter finds a
+  `wrong`. The interpreter is a much simpler, independent implementation, so it
+  is a trustworthy cross-check (`examples/oracle_safe.mml` / `oracle_unsafe.mml`).
+* **Algebraic laws of the effect domain** (`tests/test_effects_laws.py`).
+  Exhaustively over the six-element lattice: `;` is associative with `B` as
+  identity and `E` absorbing; `;`, `*`, and `⊔` are monotone. These are exactly
+  the properties the compositional analysis and the rule of consequence rely on,
+  so a transcription error in the paper's tables would be caught.
+* **Boogie ⟷ Python algebra agreement** (`tests/test_prelude.py`). A generated
+  Boogie program asserts `seqEff`/`leqEff` equal the Python `effects` result on
+  all 36 pairs, so the two implementations of the effect algebra cannot drift.
+* **Systematic mutation testing** (`tests/test_mutation.py`). Verified programs
+  are broken in semantics-changing ways (drop a lock op, drop an interior yield,
+  swap acquire/release movers, weaken a postcondition) and each mutant must be
+  rejected — guarding against the checker becoming vacuous (no false negatives).
+* **Generated-Boogie well-formedness** (`tests/test_wellformed.py`). Boogie must
+  parse, resolve, and type-check every generated program (no `tool_failure`,
+  no resolution errors), so code generation never emits malformed output.
 
 > **On "Boogie Python bindings":** there is no official Python binding for the
 > Boogie verifier — the `boogie` package on PyPI is an unrelated Django helper.
@@ -458,7 +512,8 @@ consistent across the threads that may touch them.
 | `moverlogic/vcgen.py`        | lowering Mover Logic obligations to Boogie        |
 | `moverlogic/boogie_backend.py` | run Boogie, map failures back to source         |
 | `moverlogic/checker.py`      | top-level driver                                  |
-| `moverlogic/cli.py`          | command-line interface                            |
+| `moverlogic/cli.py`          | `moverlogic` command-line interface (verify)      |
+| `moverlogic/interp.py`       | reference interpreter + `moverlogic-run` (execute + oracle) |
 
 ---
 

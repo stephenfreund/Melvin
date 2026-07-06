@@ -1,0 +1,35 @@
+// Oracle program (UNSAFE).  Identical to oracle_safe.mml except each thread adds
+// 1, which breaks the even(x) invariant.  The verifier REJECTS it (the reducible
+// sequence violates the guarantee even(\old(x)) ==> even(x)), and the reference
+// interpreter independently finds an interleaving in which `assert even(x)`
+// fails.  Both agree the program is unsafe.
+var int x  both-mover if m == tid;
+lock m  write right-mover if \old(m) == 0 && m == tid
+        write left-mover  if \old(m) == tid && m == 0;
+
+atomic
+requires true
+ensures  x == \old(x) + 1 && m == \old(m)
+add1() {
+  acquire(m);
+  t = x;
+  t = t + 1;
+  x = t;
+  release(m);
+}
+
+relies     even(\old(x)) ==> even(x)
+guarantees even(\old(x)) ==> even(x)
+requires   even(x)
+ensures    even(x)
+w() {
+  yield;
+  assert even(x);
+  add1();
+  yield;
+  assert even(x);
+}
+
+init x == 0 && m == 0;
+thread { w(); }
+thread { w(); }

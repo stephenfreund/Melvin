@@ -17,6 +17,7 @@ test = ["pytest>=7.0"]
 
 [project.scripts]
 moverlogic = "moverlogic.cli:main"
+moverlogic-run = "moverlogic.interp:main"
 
 [tool.setuptools]
 packages = ["moverlogic"]

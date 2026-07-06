@@ -1,0 +1,35 @@
+// Oracle program (safe).  Two threads each atomically add 2 to a lock-protected
+// counter and assert even(x) at yield points.  The verifier accepts it; the
+// reference interpreter (moverlogic.interp) confirms no interleaving reaches a
+// failed assertion.  Used to cross-check the verifier against the operational
+// semantics.
+var int x  both-mover if m == tid;
+lock m  write right-mover if \old(m) == 0 && m == tid
+        write left-mover  if \old(m) == tid && m == 0;
+
+atomic
+requires true
+ensures  x == \old(x) + 2 && m == \old(m)
+add2() {
+  acquire(m);
+  t = x;
+  t = t + 2;
+  x = t;
+  release(m);
+}
+
+relies     even(\old(x)) ==> even(x)
+guarantees even(\old(x)) ==> even(x)
+requires   even(x)
+ensures    even(x)
+w() {
+  yield;
+  assert even(x);
+  add2();
+  yield;
+  assert even(x);
+}
+
+init x == 0 && m == 0;
+thread { w(); }
+thread { w(); }

@@ -13,13 +13,14 @@ Architecturally inspired by the Anchor / Synchronicity verifiers in
 ## Commands
 
 ```bash
-pip install -e ".[test]"                         # install (adds `moverlogic` command)
+pip install -e ".[test]"                         # install (adds `moverlogic`, `moverlogic-run`)
 export MOVERLOGIC_BOOGIE=/path/to/boogie          # if boogie isn't on PATH
 moverlogic examples/counter.mml                   # verify a program
 moverlogic examples/counter.mml --show-bpl        # print generated Boogie
 moverlogic examples/counter.mml --emit-bpl out.bpl   # save generated Boogie
+moverlogic-run examples/oracle_safe.mml           # execute under all interleavings
 pytest tests/ -q                                  # run tests (prover tests self-skip)
-pytest tests/test_moverlogic.py::test_effect_seq_identities   # a single test
+pytest tests/test_effects.py::test_seq_matches_paper_table   # a single test
 ```
 
 Boogie discovery order: `MOVERLOGIC_BOOGIE` env var → `boogie`/`Boogie` on PATH
@@ -39,7 +40,8 @@ shells out to the executable.
 | `prelude.py` | fixed Boogie prelude: the effect algebra as Boogie functions, `even`, immutable `List`, `Optional` |
 | `vcgen.py`   | the core — lowers each Mover Logic obligation to a Boogie procedure |
 | `boogie_backend.py` | runs Boogie; `Emitter` records an obligation per emitted `assert`, keyed by line, so failures map back to source |
-| `checker.py` / `cli.py` | driver and CLI |
+| `checker.py` / `cli.py` | driver and `moverlogic` verify CLI |
+| `interp.py`  | reference small-step interpreter + `moverlogic-run`; independent differential oracle for the verifier (explores all interleavings, detects reachable `wrong`) |
 
 ### Key design points (read before editing `vcgen.py`)
 
