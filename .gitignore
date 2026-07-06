@@ -5,3 +5,6 @@ __pycache__/
 *.bpl
 build/
 dist/
+.coverage
+.coverage.*
+htmlcov/

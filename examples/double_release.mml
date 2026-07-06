@@ -1,0 +1,13 @@
+// Releasing a lock the thread does not hold: REJECTED (release is not a
+// left-mover here, so the mover specification is violated).
+var int x  both-mover if m == tid;
+lock m  write right-mover if \old(m) == 0 && m == tid
+        write left-mover  if \old(m) == tid && m == 0;
+
+atomic
+requires true
+ensures  true
+oops() {
+  release(m);
+}
+init m == 0;

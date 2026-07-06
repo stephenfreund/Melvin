@@ -61,9 +61,24 @@ moverlogic examples/*.mml                        # verify several
 python -m moverlogic examples/counter.mml        # equivalent, no console script
 moverlogic examples/counter.mml --show-bpl       # also print the generated Boogie
 moverlogic examples/counter.mml --emit-bpl out.bpl   # save the generated Boogie
+moverlogic --timeout 60 examples/counter.mml     # cap Boogie at 60s for this file
 ```
 
-Exit status is `0` if every file verifies, `1` otherwise.
+**Timeouts.** Each file gets a wall-clock verification budget (default **300 s =
+5 minutes**), adjustable with `--timeout SECONDS`.  If Boogie does not finish in
+time it is killed and the file is reported as timed out (not crashed):
+
+```console
+$ moverlogic --timeout 5 hard.mml ; echo "exit=$?"
+== hard.mml ==
+verification timed out:
+error: verification timed out after 5s (raise the limit with --timeout)
+exit=2
+```
+
+**Exit status:** `0` if every file verifies, `1` if some file is refuted, and
+`2` if some file timed out — so scripts can tell a genuine refutation from an
+exhausted budget.
 
 ## Quick start — examples to try and their expected output
 
@@ -123,8 +138,12 @@ pip install -e ".[test]"
 pytest tests/ -q
 ```
 
-Boogie-dependent tests self-skip if Boogie cannot be located, so the effect-
-algebra and front-end tests still run without a prover installed.
+There is a unit-test module per source file (`tests/test_<module>.py`) plus an
+end-to-end suite (`tests/test_examples.py`) that verifies every example and
+checks that the broken ones are rejected with the right diagnostic. Boogie-
+dependent tests self-skip if Boogie cannot be located, so the effect-algebra,
+lexer, parser, type-checker, and code-generation tests still run without a
+prover installed.
 
 > **On "Boogie Python bindings":** there is no official Python binding for the
 > Boogie verifier — the `boogie` package on PyPI is an unrelated Django helper.
@@ -413,7 +432,16 @@ consistent across the threads that may touch them.
 | `spinlock.mml`             | user-defined spin lock; `spin_lock` = atomic right-mover |
 | `queue.mml`                | lock-free single-element queue (cas + unstable read)    |
 | `stack.mml`                | lock-free stack over immutable lists                    |
-| `racy_bad.mml`             | a racy program that is correctly **rejected**           |
+| `write_guarded.mml`        | write-guarded discipline (locked writes, lock-free reads) |
+| `nested_control.mml`       | nested `if` inside a critical section (branch join)     |
+| `nonatomic_two_yields.mml` | a non-atomic worker with three reducible sequences      |
+| `atomic_calls_atomic.mml`  | an atomic function calling other atomic functions       |
+| `assert_pass.mml`          | an assertion that holds                                  |
+| **Rejected examples**      | *(verified to fail, with a source-mapped diagnostic)*   |
+| `racy_bad.mml`             | writing `x` without holding its lock (data race)        |
+| `assert_fail.mml`          | an assertion that need not hold                          |
+| `double_release.mml`       | releasing a lock the thread does not hold               |
+| `both_mover_loop.mml`      | a both-mover-only loop (left-mover termination)         |
 
 ---
 

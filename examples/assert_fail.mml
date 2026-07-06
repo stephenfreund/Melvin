@@ -1,0 +1,15 @@
+// An assertion that can fail: REJECTED.
+var int x  both-mover if m == tid;
+lock m  write right-mover if \old(m) == 0 && m == tid
+        write left-mover  if \old(m) == tid && m == 0;
+
+atomic
+requires true
+ensures  m == \old(m)
+bad() {
+  acquire(m);
+  t = x;
+  assert t == 5;          // <-- x need not be 5
+  release(m);
+}
+init x == 0 && m == 0;

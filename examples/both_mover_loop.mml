@@ -1,0 +1,16 @@
+// A loop whose body and exit are both-movers only: REJECTED at analysis time,
+// because a reducible loop may not lie entirely in the both/left-mover region
+// (left-mover termination requirement of M-while).
+var int x  both-mover if m == tid;
+lock m  write right-mover if \old(m) == 0 && m == tid
+        write left-mover  if \old(m) == tid && m == 0;
+
+atomic
+requires true
+ensures  true
+spin_local() {
+  acquire(m);
+  while (x < 10) invariant true { skip; }
+  release(m);
+}
+init x == 0 && m == 0;

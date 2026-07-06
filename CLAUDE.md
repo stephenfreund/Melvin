@@ -64,11 +64,18 @@ Grammar keyword? update `lexer.KEYWORDS` + `parser`. New statement/expr? add an
 
 ## Examples & tests
 
-`examples/*.mll` are the paper's examples (counter, spin lock, lock-free queue &
-stack) plus a client variant and an intentionally-racy `racy_bad.mml`. Expected
-obligation counts live in `README.md` and are asserted by `tests/`. When changing
-`vcgen.py`, re-run `pytest tests/` — the mutation tests guard against the checker
-becoming vacuous (a program that should fail must still fail).
+`examples/*.mml` are the paper's examples plus corner cases (write-guarded,
+nested control, non-atomic chains, atomic-calls-atomic) and rejected programs
+(`racy_bad`, `assert_fail`, `double_release`, `both_mover_loop`). There is one
+unit-test module per source file (`tests/test_<module>.py`) plus end-to-end
+`tests/test_examples.py`; `tests/_util.py` holds the `needs_boogie` skip marker.
+Boogie-dependent tests self-skip when the prover is absent. Run `pytest tests/`;
+mutation tests guard against the checker becoming vacuous (a program that should
+fail must still fail). Coverage is ~96% (`pytest --cov=moverlogic`).
+
+Boogie runs under a wall-clock timeout (`boogie_backend.DEFAULT_TIMEOUT`, 5 min;
+`--timeout` on the CLI). A timeout yields `CheckResult.timed_out=True` and CLI
+exit code 2 (vs 1 for a refutation), never an exception.
 
 Mover-spec validity checks all four paper conditions (`gen_validity` →
 `_validity3` for (3), `_validity_commute` for (1),(2),(4)). Writes are modelled

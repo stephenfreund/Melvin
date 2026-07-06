@@ -1,0 +1,35 @@
+// A non-atomic function with two yields (three reducible sequences), each
+// preserving the guarantee that x only grows.
+var int x  both-mover if m == tid;
+lock m  write right-mover if \old(m) == 0 && m == tid
+        write left-mover  if \old(m) == tid && m == 0;
+
+atomic
+requires true
+ensures  x == \old(x) + n && result == x && m == \old(m)
+add() {
+  acquire(m);
+  t = x;
+  t = t + n;
+  x = t;
+  result = t;
+  release(m);
+}
+
+relies     \old(x) <= x
+guarantees \old(x) <= x
+requires   x >= 0
+ensures    x >= 0
+worker() {
+  yield;
+  n = 1;
+  add();
+  yield;
+  n = 1;
+  add();
+  yield;
+}
+
+init x == 0 && m == 0;
+thread { worker(); }
+thread { worker(); }

@@ -321,7 +321,10 @@ class Lowerer:
             self.em.assert_("false", s.span, "this program point (wrong) is reachable")
             return
         if isinstance(s, A.Assert):
-            self.em.assert_(self.tr.tr(s.expr, cur, cur), s.span, "assertion may not hold")
+            # An assertion is a two-store predicate: `\old` binds to the start of
+            # the current reducible sequence (the `o_` snapshot), like P and Q.
+            self.em.assert_(self.tr.tr(s.expr, cur, self.snap_map(scope, "o")),
+                            s.span, "assertion may not hold")
             return
         if isinstance(s, A.Yield):
             self.emit_yield(s, ctx)

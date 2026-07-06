@@ -23,6 +23,9 @@ from typing import Dict, List, Optional
 
 from .diagnostics import Diagnostic, Span
 
+# Default wall-clock budget for a single Boogie run: 5 minutes.
+DEFAULT_TIMEOUT = 300
+
 
 @dataclass
 class Obligation:
@@ -117,12 +120,33 @@ class BoogieBackend:
         self,
         emitter: Emitter,
         bpl_path: str,
-        timeout: int = 120,
+        timeout: int = DEFAULT_TIMEOUT,
     ) -> "VerifyResult":
-        """Write the emitter's program to `bpl_path`, run Boogie, map results."""
+        """Write the emitter's program to `bpl_path`, run Boogie, map results.
+
+        If Boogie does not finish within `timeout` seconds it is killed and a
+        result with `timed_out=True` (and `ok=False`) is returned rather than
+        propagating the exception.
+        """
         with open(bpl_path, "w") as f:
             f.write(emitter.text())
-        proc = self.run_raw(bpl_path, timeout=timeout)
+        try:
+            proc = self.run_raw(bpl_path, timeout=timeout)
+        except subprocess.TimeoutExpired as e:
+            partial = ""
+            if e.stdout:
+                partial = e.stdout if isinstance(e.stdout, str) else e.stdout.decode(errors="replace")
+            return VerifyResult(
+                ok=False,
+                diagnostics=[Diagnostic(
+                    None,
+                    f"verification timed out after {timeout}s "
+                    f"(raise the limit with --timeout)")],
+                verified=0,
+                n_errors=0,
+                raw_output=partial,
+                timed_out=True,
+            )
         return self._interpret(proc, emitter, bpl_path)
 
     def _interpret(self, proc, emitter: Emitter, bpl_path: str) -> "VerifyResult":
@@ -164,6 +188,7 @@ class BoogieBackend:
             n_errors=n_errors,
             raw_output=out,
             tool_failure=tool_failure,
+            timed_out=False,
         )
 
     @staticmethod
@@ -189,3 +214,4 @@ class VerifyResult:
     n_errors: int
     raw_output: str
     tool_failure: Optional[str] = None
+    timed_out: bool = False

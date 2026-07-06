@@ -1,0 +1,30 @@
+// An atomic function calling another atomic function (both non-recursive).
+var int x  both-mover if m == tid;
+lock m  write right-mover if \old(m) == 0 && m == tid
+        write left-mover  if \old(m) == tid && m == 0;
+
+atomic right-mover
+requires true
+ensures  m == tid && x == \old(x)
+lock_it() {
+  acquire(m);
+}
+
+atomic left-mover
+requires m == tid
+ensures  m == 0 && x == \old(x)
+unlock_it() {
+  release(m);
+}
+
+atomic
+requires true
+ensures  x == \old(x) + 1 && m == 0
+bump() {
+  lock_it();
+  t = x;
+  t = t + 1;
+  x = t;
+  unlock_it();
+}
+init x == 0 && m == 0;

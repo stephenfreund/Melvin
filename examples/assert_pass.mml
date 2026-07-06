@@ -1,0 +1,17 @@
+// An assertion that always holds (verifies).
+var int x  both-mover if m == tid;
+lock m  write right-mover if \old(m) == 0 && m == tid
+        write left-mover  if \old(m) == tid && m == 0;
+
+atomic
+requires true
+ensures  m == \old(m)
+checked() {
+  acquire(m);
+  t = x;
+  t = t + 1;
+  x = t;
+  assert t == \old(x) + 1;
+  release(m);
+}
+init x == 0 && m == 0;

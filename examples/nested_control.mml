@@ -1,0 +1,23 @@
+// Nested control flow inside an atomic function: an if inside the critical
+// section, exercising branch join in the effect analysis.
+var int x  both-mover if m == tid;
+lock m  write right-mover if \old(m) == 0 && m == tid
+        write left-mover  if \old(m) == tid && m == 0;
+
+atomic
+requires true
+ensures  m == \old(m)
+maybe_bump() {
+  acquire(m);
+  t = x;
+  if (t < 100) {
+    t = t + 1;
+    x = t;
+  } else {
+    t = 0;
+    x = t;
+  }
+  release(m);
+}
+
+init x == 0 && m == 0;

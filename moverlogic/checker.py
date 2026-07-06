@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from .ast_nodes import Program
-from .boogie_backend import BoogieBackend, Emitter
+from .boogie_backend import BoogieBackend, Emitter, DEFAULT_TIMEOUT
 from .diagnostics import Diagnostic, MoverLogicError
 from .parser import parse
 from .types import check_types
@@ -24,8 +24,12 @@ class CheckResult:
     verified: int = 0
     source_lines: List[str] = field(default_factory=list)
     tool_failure: Optional[str] = None
+    timed_out: bool = False
 
     def render(self) -> str:
+        if self.timed_out:
+            body = "\n".join(d.render(self.source_lines) for d in self.diagnostics)
+            return "verification timed out:\n" + body if body else "verification timed out"
         if self.tool_failure:
             return "internal prover error:\n" + self.tool_failure
         if self.ok:
@@ -38,7 +42,7 @@ def check_source(
     filename: str = "<input>",
     boogie_path: Optional[str] = None,
     keep_bpl: Optional[str] = None,
-    timeout: int = 120,
+    timeout: int = DEFAULT_TIMEOUT,
 ) -> CheckResult:
     source_lines = source.splitlines()
     # -- front end: parse + type-check + lower (may raise MoverLogicError) ----
@@ -79,6 +83,7 @@ def check_source(
         verified=result.verified,
         source_lines=source_lines,
         tool_failure=result.tool_failure,
+        timed_out=result.timed_out,
     )
 
 

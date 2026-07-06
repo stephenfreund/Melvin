@@ -1,0 +1,33 @@
+// Write-guarded discipline (paper, "Additional Mover Specification Examples").
+// y must be written only while holding m, but may be read without it.  A
+// lock-held read is a both-mover; an unlocked read is a non-mover (it races
+// with concurrent writers); a write is a non-mover (it races with readers).
+var int y  write non-mover  if m == tid
+           read  both-mover if m == tid
+           read  non-mover;
+
+lock m  write right-mover if \old(m) == 0 && m == tid
+        write left-mover  if \old(m) == tid && m == 0;
+
+// Increment y under the lock.  Effect R;B;N;L = N, so this is atomic.
+atomic
+requires true
+ensures  y == \old(y) + 1 && m == \old(m)
+inc_y() {
+  acquire(m);
+  t = y;
+  t = t + 1;
+  y = t;
+  release(m);
+}
+
+// An unsynchronized read: a single non-mover, hence still atomic.
+atomic
+requires true
+ensures  result == y
+read_y() {
+  r = y;
+  result = r;
+}
+
+init y == 0 && m == 0;
