@@ -1,3 +1,5 @@
+# Melvin
+
 <img width="120" height="120" alt="melvin-small" src="https://github.com/user-attachments/assets/9f2d1c59-23db-496d-83fe-2ba91271c689" />
 
 **Melvin** is a verifier for **Mover Logic** — the reduction-based
