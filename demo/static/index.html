@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Melvin — a verifier for Mover Logic</title>
+  <link rel="icon" href="melvin.png">
+  <link rel="stylesheet" href="vendor/codemirror/codemirror.css">
+  <link rel="stylesheet" href="vendor/codemirror/material-darker.css">
+  <link rel="stylesheet" href="css/melvin.css">
+</head>
+<body>
+
+<header class="navbar">
+  <div class="brand">
+    <img src="melvin.png" alt="Melvin logo">
+    <span class="brand-name">Melvin</span>
+    <span class="brand-sub">a verifier for Mover Logic</span>
+  </div>
+  <nav class="menus">
+    <div class="menu">
+      <button class="menu-btn" aria-haspopup="true">Examples &#9662;</button>
+      <div class="menu-list" id="examples-menu"><span class="menu-loading">loading…</span></div>
+    </div>
+    <div class="menu">
+      <button class="menu-btn" aria-haspopup="true">Docs &#9662;</button>
+      <div class="menu-list">
+        <a href="https://doi.org/10.4230/LIPIcs.ECOOP.2024.16" target="_blank" rel="noopener">The Mover Logic paper (ECOOP 2024)</a>
+        <a href="https://github.com/stephenfreund/Melvin" target="_blank" rel="noopener">Melvin on GitHub</a>
+        <a href="https://github.com/stephenfreund/Melvin#the-mover-logic-language-mll" target="_blank" rel="noopener">Language reference</a>
+      </div>
+    </div>
+    <div class="menu">
+      <button class="menu-btn" aria-haspopup="true">Options &#9662;</button>
+      <div class="menu-list">
+        <button class="menu-item" data-font="13px">Small font</button>
+        <button class="menu-item" data-font="15px">Normal font</button>
+        <button class="menu-item" data-font="18px">Large font</button>
+        <hr>
+        <button class="menu-item" id="theme-toggle">Toggle dark mode</button>
+      </div>
+    </div>
+  </nav>
+  <div class="toolbar">
+    <button id="btn-verify" class="btn primary" title="Verify (Ctrl/Cmd-Enter)">Verify</button>
+    <button id="btn-run" class="btn" title="Run under all interleavings (bounded)">Run</button>
+    <button id="btn-share" class="btn" title="Copy a link to this program">Share</button>
+  </div>
+</header>
+
+<div class="filebar">
+  <span id="file-name">untitled.mml</span>
+  <span id="modified-dot" class="modified-dot" hidden>&#9679; modified</span>
+  <span class="filebar-spacer"></span>
+  <span id="status" class="status"></span>
+</div>
+
+<main id="main">
+  <section id="editor-pane">
+    <textarea id="editor"></textarea>
+  </section>
+  <div id="divider" role="separator" aria-orientation="vertical"></div>
+  <section id="output-pane">
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-tab="output" role="tab">Output</button>
+      <button class="tab" data-tab="boogie" role="tab">Boogie</button>
+      <button class="tab" data-tab="trace" role="tab">Trace</button>
+    </div>
+    <div id="tab-output" class="tab-panel active">
+      <div class="placeholder">
+        Pick an example from the <b>Examples</b> menu (or write your own program),
+        then press <b>Verify</b> — or <b>Run</b> to execute it under all thread
+        interleavings with the reference interpreter.
+      </div>
+    </div>
+    <div id="tab-boogie" class="tab-panel">
+      <div class="panel-actions">
+        <button id="btn-download-bpl" class="btn small" disabled>Download .bpl</button>
+      </div>
+      <pre id="boogie-text" class="code-block">Verify a program to see the Boogie it generates.</pre>
+    </div>
+    <div id="tab-trace" class="tab-panel">
+      <div class="placeholder">
+        Press <b>Run</b> to execute the program under all interleavings
+        (the reference interpreter, Melvin&rsquo;s differential oracle).
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="vendor/codemirror/codemirror.js"></script>
+<script src="vendor/codemirror/matchbrackets.js"></script>
+<script src="js/mml-mode.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

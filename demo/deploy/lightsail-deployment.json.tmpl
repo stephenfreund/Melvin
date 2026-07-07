@@ -1,0 +1,25 @@
+{
+  "containers": {
+    "melvin": {
+      "image": "__IMAGE__",
+      "ports": { "8080": "HTTP" },
+      "environment": {
+        "MELVIN_DEMO_VERIFY_TIMEOUT": "30",
+        "MELVIN_DEMO_RUN_TIMEOUT": "10",
+        "MELVIN_DEMO_MAX_JOBS": "2"
+      }
+    }
+  },
+  "publicEndpoint": {
+    "containerName": "melvin",
+    "containerPort": 8080,
+    "healthCheck": {
+      "path": "/api/health",
+      "successCodes": "200",
+      "intervalSeconds": 30,
+      "timeoutSeconds": 10,
+      "healthyThreshold": 2,
+      "unhealthyThreshold": 3
+    }
+  }
+}

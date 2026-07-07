@@ -90,3 +90,16 @@ Rely well-formedness (`gen_rely_checks`): each non-atomic function's rely must
 be reflexive and transitive (`R = R*`), because `emit_yield` assumes R once to
 model any number of interference steps. Guarantees need no closure check —
 they are asserted one reducible sequence at a time.
+
+## Web demo
+
+`demo/` holds a FastAPI server (`demo/server/app.py`: verify in-process via
+`check_source`, interpreter in a killable subprocess; rate limit, job queue,
+LRU cache, `MELVIN_DEMO_*` env config) and a no-build frontend
+(`demo/static/`, vendored CodeMirror 5). Run with
+`uvicorn demo.server.app:app --reload`; demo deps in `demo/requirements.txt`
+(not core deps — `tests/test_demo_server.py` self-skips without them).
+`demo/Dockerfile` bundles Boogie+Z3 and smoke-tests at build time;
+`demo/deploy/deploy-lightsail.sh` deploys to Lightsail Containers (`-n` = dry
+run). The Examples menu manifest (`demo/server/examples_manifest.py`) is also
+the served-file allowlist — add new examples there.

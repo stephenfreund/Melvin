@@ -1,0 +1,218 @@
+/* Melvin demo styles.  Light/dark themes via CSS custom properties on
+   html[data-theme]; layout is a fixed navbar + filebar over a two-pane
+   splitter (editor | tabbed output). */
+
+:root, html[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-soft: #f5f6f8;
+  --bg-hover: #e9ebef;
+  --fg: #1c1e21;
+  --fg-dim: #5f6673;
+  --border: #d7dae0;
+  --accent: #2f6fed;
+  --accent-fg: #ffffff;
+  --ok: #1a7f37;
+  --ok-bg: #e6f4ea;
+  --bad: #c62828;
+  --bad-bg: #fdecea;
+  --warn: #9a6700;
+  --warn-bg: #fff8e1;
+  --navbar-bg: #23272e;
+  --navbar-fg: #f0f2f5;
+}
+
+html[data-theme="dark"] {
+  --bg: #1e2227;
+  --bg-soft: #23282e;
+  --bg-hover: #2d333b;
+  --fg: #e6e8ea;
+  --fg-dim: #9aa4b2;
+  --border: #3a4048;
+  --accent: #4d8dff;
+  --accent-fg: #ffffff;
+  --ok: #4caf7d;
+  --ok-bg: #16301f;
+  --bad: #ef6a6a;
+  --bad-bg: #3a1f1f;
+  --warn: #d9a941;
+  --warn-bg: #33290f;
+  --navbar-bg: #15181c;
+  --navbar-fg: #f0f2f5;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; height: 100%;
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  background: var(--bg); color: var(--fg);
+}
+
+body { display: flex; flex-direction: column; overflow: hidden; }
+
+/* ------------------------------------------------------------- navbar */
+
+.navbar {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--navbar-bg); color: var(--navbar-fg);
+  padding: 6px 14px; flex: none;
+}
+.brand { display: flex; align-items: center; gap: 9px; }
+.brand img { height: 30px; width: 30px; border-radius: 6px; }
+.brand-name { font-size: 17px; font-weight: 650; letter-spacing: .2px; }
+.brand-sub { color: #aab3c0; font-size: 12.5px; margin-left: 2px; }
+
+.menus { display: flex; align-items: center; gap: 2px; margin-left: 10px; }
+.menu { position: relative; }
+.menu-btn {
+  background: none; border: none; color: var(--navbar-fg);
+  font: inherit; padding: 7px 10px; cursor: pointer; border-radius: 6px;
+}
+.menu-btn:hover, .menu.open .menu-btn { background: rgba(255,255,255,.12); }
+.menu-list {
+  display: none; position: absolute; top: 100%; left: 0; z-index: 50;
+  min-width: 260px; max-height: 70vh; overflow-y: auto;
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.25);
+  padding: 6px;
+}
+.menu.open .menu-list { display: block; }
+.menu-list a, .menu-item {
+  display: block; width: 100%; text-align: left; text-decoration: none;
+  background: none; border: none; font: inherit; color: var(--fg);
+  padding: 7px 10px; border-radius: 6px; cursor: pointer;
+}
+.menu-list a:hover, .menu-item:hover { background: var(--bg-hover); }
+.menu-list hr { border: none; border-top: 1px solid var(--border); margin: 6px 4px; }
+.menu-group {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
+  color: var(--fg-dim); padding: 8px 10px 3px;
+}
+.menu-example small { display: block; color: var(--fg-dim); font-size: 12px; }
+.menu-loading { display: block; padding: 8px 10px; color: var(--fg-dim); }
+
+.toolbar { margin-left: auto; display: flex; gap: 8px; }
+
+/* ------------------------------------------------------------- buttons */
+
+.btn {
+  font: inherit; padding: 6px 14px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg-soft); color: var(--fg);
+}
+.navbar .btn { border-color: rgba(255,255,255,.25); background: rgba(255,255,255,.08); color: var(--navbar-fg); }
+.navbar .btn:hover { background: rgba(255,255,255,.16); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.1); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn.small { padding: 3px 10px; font-size: 12.5px; }
+
+/* ------------------------------------------------------------- filebar */
+
+.filebar {
+  display: flex; align-items: center; gap: 10px; flex: none;
+  padding: 5px 14px; background: var(--bg-soft);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+#file-name { font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.modified-dot { color: var(--warn); font-size: 12px; }
+.filebar-spacer { flex: 1; }
+
+.status { display: flex; align-items: center; gap: 8px; color: var(--fg-dim); }
+.status .spinner {
+  width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.badge {
+  display: inline-block; padding: 1px 10px; border-radius: 999px;
+  font-size: 12.5px; font-weight: 600;
+}
+.badge.ok { color: var(--ok); background: var(--ok-bg); }
+.badge.bad { color: var(--bad); background: var(--bad-bg); }
+.badge.warn { color: var(--warn); background: var(--warn-bg); }
+
+/* ------------------------------------------------------------- layout */
+
+#main { flex: 1; display: flex; min-height: 0; }
+#editor-pane { flex: 1 1 58%; min-width: 200px; display: flex; min-height: 0; }
+#divider { flex: none; width: 5px; cursor: col-resize; background: var(--border); }
+#divider:hover { background: var(--accent); }
+#output-pane {
+  flex: 1 1 42%; min-width: 220px; display: flex; flex-direction: column;
+  min-height: 0; background: var(--bg-soft);
+}
+
+.CodeMirror { flex: 1; height: 100%; font-size: 15px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+/* ------------------------------------------------------------- tabs */
+
+.tabs { display: flex; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--border); flex: none; }
+.tab {
+  font: inherit; border: none; background: none; color: var(--fg-dim);
+  padding: 7px 14px; cursor: pointer;
+  border-radius: 7px 7px 0 0; border-bottom: 2px solid transparent;
+}
+.tab:hover { color: var(--fg); }
+.tab.active { color: var(--fg); font-weight: 600; border-bottom-color: var(--accent); }
+
+.tab-panel { display: none; flex: 1; overflow: auto; padding: 12px 14px; min-height: 0; }
+.tab-panel.active { display: block; }
+
+.placeholder { color: var(--fg-dim); max-width: 46em; }
+
+.panel-actions { margin-bottom: 8px; }
+.code-block {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px; white-space: pre; margin: 0;
+  color: var(--fg);
+}
+
+/* ------------------------------------------------------------- results */
+
+.result-banner {
+  padding: 10px 14px; border-radius: 8px; margin-bottom: 12px;
+  font-weight: 600;
+}
+.result-banner.ok { background: var(--ok-bg); color: var(--ok); }
+.result-banner.bad { background: var(--bad-bg); color: var(--bad); }
+.result-banner.warn { background: var(--warn-bg); color: var(--warn); }
+.result-banner small { font-weight: 400; display: block; margin-top: 2px; }
+
+.diag-list { list-style: none; margin: 0; padding: 0; }
+.diag {
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+  margin-bottom: 8px; cursor: pointer; background: var(--bg);
+}
+.diag:hover { border-color: var(--accent); }
+.diag .diag-loc {
+  font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+  color: var(--accent); font-weight: 600;
+}
+.diag .diag-msg { margin-top: 2px; }
+
+.trace-list { list-style: none; margin: 8px 0 0; padding: 0;
+  font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+.trace-list li { padding: 2px 8px; border-left: 3px solid var(--border); }
+.trace-list li:last-child { border-left-color: var(--bad); font-weight: 600; }
+
+/* -------------------------------------------------- editor annotations */
+
+.mml-squiggle {
+  text-decoration: underline wavy var(--bad);
+  text-decoration-skip-ink: none;
+}
+.gutter-error { color: var(--bad); font-weight: 700; cursor: pointer; }
+.melvin-errors { width: 14px; }
+
+/* ------------------------------------------------------------- narrow */
+
+@media (max-width: 800px) {
+  #main { flex-direction: column; }
+  #divider { width: auto; height: 5px; cursor: row-resize; }
+  .brand-sub, kbd { display: none; }
+}

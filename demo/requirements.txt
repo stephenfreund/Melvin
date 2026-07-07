@@ -1,0 +1,5 @@
+# Dependencies for the Melvin web demo server (demo/server/app.py).
+# The core `melvin` package deliberately does not depend on these.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+httpx>=0.27          # used by tests/test_demo_server.py (FastAPI TestClient)

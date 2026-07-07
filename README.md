@@ -113,7 +113,7 @@ client):
 ```console
 $ melvin examples/counter.mml
 == examples/counter.mml ==
-verified (21 Boogie proof obligation(s) discharged)
+verified (23 Boogie proof obligation(s) discharged)
 ```
 
 The whole example suite — every file below should verify except the
@@ -123,10 +123,10 @@ intentionally broken one:
 $ melvin examples/counter.mml examples/counter_client2.mml \
              examples/spinlock.mml examples/queue.mml examples/stack.mml
 == examples/counter.mml ==
-verified (21 Boogie proof obligation(s) discharged)
+verified (23 Boogie proof obligation(s) discharged)
 
 == examples/counter_client2.mml ==
-verified (21 Boogie proof obligation(s) discharged)
+verified (23 Boogie proof obligation(s) discharged)
 
 == examples/spinlock.mml ==
 verified (19 Boogie proof obligation(s) discharged)
@@ -155,6 +155,20 @@ from `client()` in `counter.mml` and you get a reducibility error
 (`call to add() breaks reducibility here`: two non-movers with no yield between
 them); change `add`'s postcondition to `x == \old(x) + 1` and you get
 `postcondition of atomic add() may not hold`.
+
+## Web demo
+
+There is a browser front end (examples menu, editor with error squiggles,
+generated-Boogie view, and a Run-all-interleavings button) backed by a small
+verification server that runs locally or on Amazon Lightsail:
+
+```bash
+pip install -r demo/requirements.txt
+uvicorn demo.server.app:app --reload      # then open http://127.0.0.1:8000
+```
+
+See [`demo/README.md`](demo/README.md) for the Docker image and the Lightsail
+deployment script.
 
 ## Running the tests
 
