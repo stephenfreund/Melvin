@@ -1,0 +1,45 @@
+// A deliberately REJECTED program: the rely bounds each single interference
+// step ("x grows by at most one") but is NOT transitively closed -- two
+// environment steps can add two.  Melvin's yield rule assumes R once to
+// summarise any number of interference steps (R* in the paper), so accepting
+// a non-transitive rely would be unsound: after a yield the checker would
+// believe x drifted by at most one even though two other threads may each
+// have added one.  Melvin instead rejects the rely itself (RelyTrans check).
+//
+// The transitively closed spec this program *should* use is x >= \old(x)
+// (or a per-thread bound expressed some other way).
+
+var int x  both-mover if m == tid;
+
+lock m  write right-mover if \old(m) == 0 && m == tid
+        write left-mover  if \old(m) == tid && m == 0;
+
+// inc(): atomically add one to x under the lock.
+atomic
+requires true
+ensures  x == \old(x) + 1 && m == \old(m)
+inc() {
+  acquire(m);
+  t = x;
+  t = t + 1;
+  x = t;
+  release(m);
+}
+
+// Each reducible sequence of client() really does add at most one to x, so
+// the guarantee holds and G => R holds; the ONLY failing obligation is that
+// the rely is not transitive.
+relies     x <= \old(x) + 1
+guarantees x <= \old(x) + 1
+requires   true
+ensures    true
+client() {
+  yield;
+  inc();
+  yield;
+}
+
+init x == 0 && m == 0;
+
+thread { client(); }
+thread { client(); }

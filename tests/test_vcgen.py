@@ -143,6 +143,58 @@ def test_lower_program_emits_expected_procedures():
     assert em.obligations                                # at least one obligation
 
 
+def test_lower_emits_rely_wellformedness_procedures():
+    src = r"""
+        var int x both-mover if m == tid;
+        lock m write right-mover if \old(m)==0 && m==tid
+               write left-mover if \old(m)==tid && m==0;
+        relies \old(x) <= x guarantees \old(x) <= x
+        requires true ensures true
+        f() { yield; }
+        thread { f(); }
+    """
+    prog = parse(src)
+    em = lower_program(prog, check_types(prog))
+    text = em.text()
+    assert "procedure {:entrypoint} RelyRefl_f()" in text
+    assert "procedure {:entrypoint} RelyTrans_f()" in text
+    msgs = [ob.message for ob in em.obligations.values()]
+    assert any("not reflexive" in m for m in msgs)
+    assert any("not transitive" in m for m in msgs)
+
+
+def test_lower_no_rely_checks_for_atomic_only_program():
+    src = r"""
+        var int x both-mover if m == tid;
+        lock m write right-mover if \old(m)==0 && m==tid
+               write left-mover if \old(m)==tid && m==0;
+        atomic requires true ensures m == \old(m) f() { acquire(m); release(m); }
+    """
+    prog = parse(src)
+    em = lower_program(prog, check_types(prog))
+    assert "RelyRefl_" not in em.text()
+    assert "RelyTrans_" not in em.text()
+
+
+def test_rely_transitive_procedure_uses_three_store_copies():
+    src = r"""
+        var int x both-mover if m == tid;
+        lock m write right-mover if \old(m)==0 && m==tid
+               write left-mover if \old(m)==tid && m==0;
+        relies \old(x) <= x guarantees \old(x) <= x
+        requires true ensures true
+        f() { yield; }
+        thread { f(); }
+    """
+    prog = parse(src)
+    text = lower_program(prog, check_types(prog)).text()
+    body = text.split("RelyTrans_f()")[1].split("}")[0]
+    # R(a,b) and R(b,c) assumed, R(a,c) asserted
+    assert "assume (a_x <= b_x);" in body
+    assert "assume (b_x <= c_x);" in body
+    assert "assert" in body and "(a_x <= c_x)" in body
+
+
 def test_lower_records_unknown_functions_in_header():
     src = "var int x both-mover if userpred(x);"
     prog = parse(src)

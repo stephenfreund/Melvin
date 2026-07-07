@@ -69,7 +69,8 @@ Grammar keyword? update `lexer.KEYWORDS` + `parser`. New statement/expr? add an
 
 `examples/*.mml` are the paper's examples plus corner cases (write-guarded,
 nested control, non-atomic chains, atomic-calls-atomic) and rejected programs
-(`racy_bad`, `assert_fail`, `double_release`, `both_mover_loop`). There is one
+(`racy_bad`, `assert_fail`, `double_release`, `both_mover_loop`,
+`rely_not_transitive`, `rely_not_reflexive`). There is one
 unit-test module per source file (`tests/test_<module>.py`) plus end-to-end
 `tests/test_examples.py`; `tests/_util.py` holds the `needs_boogie` skip marker.
 Boogie-dependent tests self-skip when the prover is absent. Run `pytest tests/`;
@@ -84,3 +85,8 @@ Mover-spec validity checks all four paper conditions (`gen_validity` →
 `_validity3` for (3), `_validity_commute` for (1),(2),(4)). Writes are modelled
 as `<X := v>` (arbitrary store-independent value), so the commuting witness for
 (1),(2),(4) is constructed explicitly and each condition is a plain assertion.
+
+Rely well-formedness (`gen_rely_checks`): each non-atomic function's rely must
+be reflexive and transitive (`R = R*`), because `emit_yield` assumes R once to
+model any number of interference steps. Guarantees need no closure check —
+they are asserted one reducible sequence at a time.

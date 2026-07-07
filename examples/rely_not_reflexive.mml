@@ -1,0 +1,42 @@
+// A deliberately REJECTED program: the rely claims every interference step
+// STRICTLY increases x.  That relation is transitive but not reflexive, and
+// the environment may take zero steps at a yield, leaving the store
+// unchanged.  Melvin's yield rule assumes R once to summarise any number of
+// interference steps (including none), so a non-reflexive rely would let the
+// checker wrongly assume x moved across every yield.  Melvin rejects the
+// rely itself (RelyRefl check).
+//
+// Note the single thread below: with only one thread role the M-state pair
+// check G_t => R_u never runs, so guarantee reflexivity (which IS checked)
+// says nothing about the rely -- the explicit RelyRefl obligation is the
+// only check that catches this.
+
+var int x  both-mover if m == tid;
+
+lock m  write right-mover if \old(m) == 0 && m == tid
+        write left-mover  if \old(m) == tid && m == 0;
+
+atomic
+requires true
+ensures  x == \old(x) + 1 && m == \old(m)
+inc() {
+  acquire(m);
+  t = x;
+  t = t + 1;
+  x = t;
+  release(m);
+}
+
+relies     \old(x) < x
+guarantees \old(x) <= x
+requires   true
+ensures    true
+client() {
+  yield;
+  inc();
+  yield;
+}
+
+init x == 0 && m == 0;
+
+thread { client(); }

@@ -418,6 +418,10 @@ For each program the tool discharges (as separate Boogie procedures):
 5. **Run-time state rule** (`M-state`): the guarantee is reflexive (`I ⟹ G`),
    each thread's guarantee is contained in every other thread's rely
    (`G_t ⟹ R_u`), and the initial store establishes each thread's precondition.
+6. **Rely well-formedness** (`RelyRefl_*`, `RelyTrans_*`): every non-atomic
+   function's rely is reflexive and transitive, i.e. `R = R*`, so the single
+   interference step assumed at each `yield` soundly summarises any finite
+   number of environment steps (including zero).
 
 A program that discharges all obligations **does not go wrong** (Soundness
 theorem): it never fails an assertion or races.
@@ -516,6 +520,8 @@ consistent across the threads that may touch them.
 | `assert_fail.mml`          | an assertion that need not hold                          |
 | `double_release.mml`       | releasing a lock the thread does not hold               |
 | `both_mover_loop.mml`      | a both-mover-only loop (left-mover termination)         |
+| `rely_not_transitive.mml`  | a per-step-bounded rely (`x <= \old(x) + 1`) that is not transitively closed |
+| `rely_not_reflexive.mml`   | a strictly-increasing rely (`\old(x) < x`) that excludes the no-interference step |
 
 ---
 
@@ -551,8 +557,19 @@ consistent across the threads that may touch them.
 * The `M-while` **left-mover-termination** side condition is enforced with a
   sound reducibility check per iteration plus a static (state-insensitive)
   approximation for the "not entirely left-moving" requirement.
-* Rely/guarantee predicates are assumed reflexive and transitive, so a single
-  rely step models `R*`.
+* The yield rule assumes the rely **once** to model `R*` (any finite number of
+  interference steps), so each rely must be reflexive and transitive.  Melvin
+  discharges both properties as Boogie obligations (`RelyRefl_*`,
+  `RelyTrans_*`) and rejects the program otherwise — see
+  `examples/rely_not_transitive.mml` and `examples/rely_not_reflexive.mml`;
+  the closed form of a per-step bound like `x <= \old(x) + 1` is
+  `x >= \old(x)`.  Guarantees need no closure check: a guarantee is *asserted*
+  one reducible sequence at a time (never composed by the verifier), and
+  multi-step interference is absorbed entirely on the rely side via
+  `G_t ⟹ R_u` plus the rely's transitivity.  The only residual caveat is
+  prover incompleteness: a genuinely transitive rely could in principle fail
+  to prove (e.g. nonlinear arithmetic), yielding a false rejection — never a
+  false verification.
 * Verification is procedure-modular and unbounded-thread; the model is
   sequentially consistent (no weak-memory reasoning).
 

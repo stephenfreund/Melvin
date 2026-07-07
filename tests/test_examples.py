@@ -29,6 +29,8 @@ REJECTED = {
     "assert_fail.mml": "assertion",
     "double_release.mml": "not permitted",
     "both_mover_loop.mml": "terminate",
+    "rely_not_transitive.mml": "not transitive",
+    "rely_not_reflexive.mml": "not reflexive",
 }
 
 

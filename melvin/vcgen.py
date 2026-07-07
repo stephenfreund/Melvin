@@ -230,6 +230,7 @@ class Lowerer:
                 self.gen_nonatomic_fn(f)
         self.gen_validity()
         self.gen_state_checks()
+        self.gen_rely_checks()
 
         # Prepend the prelude plus any uninterpreted-function declarations.
         header = [prelude()]
@@ -399,7 +400,8 @@ class Lowerer:
             s.span, "the guarantee G may be violated by the reducible sequence "
                     "before this yield",
         )
-        # interference: havoc globals and assume the rely R* (R assumed transitive)
+        # interference: havoc globals and assume the rely once; this models R*
+        # because gen_rely_checks proves R reflexive and transitive
         self.snapshot("py", scope, only_globals=True)
         for g in self.globals_list():
             self.em.line(f"havoc v_{g};")
@@ -943,6 +945,70 @@ class Lowerer:
                 self.em.assert_(self.tr.tr(req, cur, cur), self.prog.init.span,
                                 f"initial store may not satisfy the precondition of "
                                 f"{f.name}()")
+        self.em.dedent()
+        self.em.line("}")
+
+    # ------------------------------------- rely well-formedness (R must be R*)
+    def gen_rely_checks(self) -> None:
+        """`emit_yield` assumes the rely ONCE to summarise any finite number of
+        interference steps (the paper quantifies over R*).  A single assumed
+        step soundly models R* only if R is its own reflexive-transitive
+        closure, so both properties are discharged for every non-atomic
+        function.  (Guarantees need no closure check: they are asserted one
+        reducible sequence at a time, and multi-step composition is absorbed
+        entirely on the rely side.)"""
+        nonatomic = [f for f in self.prog.funcs if not f.is_atomic]
+        if not nonatomic:
+            return
+        self.em.blank()
+        self.em.line("// ==== rely well-formedness: R must equal R* ====")
+        for f in nonatomic:
+            self._rely_reflexive(f)
+            self._rely_transitive(f)
+
+    def _rely_reflexive(self, f: A.FnDecl) -> None:
+        spec: A.NonAtomicSpec = f.spec
+        gl = list(self.ti.globals.keys())
+        self.em.blank()
+        self.em.line(f"// R(s, s) for {f.name}()  (rely is reflexive)")
+        self.em.line(f"procedure {{:entrypoint}} RelyRefl_{f.name}()")
+        self.em.line("{")
+        self.em.indent()
+        for g in gl:
+            self.em.line(f"var a_{g}: {self.ti.globals[g]};")
+        self.em.line("var tid: int; assume tid > 0;")
+        s = {**{g: f"a_{g}" for g in gl}, "tid": "tid"}
+        self.em.assert_(
+            self.tr.tr(spec.relies, s, s), spec.relies.span,
+            f"rely of {f.name}() is not reflexive: the environment may take no "
+            f"steps at a yield, so R must admit an unchanged store",
+        )
+        self.em.dedent()
+        self.em.line("}")
+
+    def _rely_transitive(self, f: A.FnDecl) -> None:
+        spec: A.NonAtomicSpec = f.spec
+        gl = list(self.ti.globals.keys())
+        self.em.blank()
+        self.em.line(f"// R;R => R for {f.name}()  (rely is transitive)")
+        self.em.line(f"procedure {{:entrypoint}} RelyTrans_{f.name}()")
+        self.em.line("{")
+        self.em.indent()
+        for g in gl:
+            t = self.ti.globals[g]
+            self.em.line(f"var a_{g}: {t}; var b_{g}: {t}; var c_{g}: {t};")
+        self.em.line("var tid: int; assume tid > 0;")
+        sa = {**{g: f"a_{g}" for g in gl}, "tid": "tid"}
+        sb = {**{g: f"b_{g}" for g in gl}, "tid": "tid"}
+        sc = {**{g: f"c_{g}" for g in gl}, "tid": "tid"}
+        self.em.line(f"assume {self.tr.tr(spec.relies, sb, sa)};")
+        self.em.line(f"assume {self.tr.tr(spec.relies, sc, sb)};")
+        self.em.assert_(
+            self.tr.tr(spec.relies, sc, sa), spec.relies.span,
+            f"rely of {f.name}() is not transitive: two successive interference "
+            f"steps do not compose into one rely step, so the single rely "
+            f"assumed at a yield cannot model R*",
+        )
         self.em.dedent()
         self.em.line("}")
 
