@@ -5,8 +5,12 @@ from __future__ import annotations
 import argparse
 import sys
 
+from .annotate import mover_annotations, render_listing
 from .boogie_backend import DEFAULT_TIMEOUT
 from .checker import check_program
+from .diagnostics import MelvinError
+from .parser import parse
+from .types import check_types
 
 # Distinct exit codes so scripts can tell a real refutation from a timeout.
 EXIT_OK = 0
@@ -26,6 +30,9 @@ def main(argv=None) -> int:
                          "first input file) and keep it")
     ap.add_argument("--show-bpl", action="store_true",
                     help="print the generated Boogie program")
+    ap.add_argument("--show-movers", action="store_true",
+                    help="print the program with a mover-annotation margin "
+                         "(R/B/L/N per statement, Y at yields) before verifying")
     ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, metavar="SECONDS",
                     help="per-file Boogie verification timeout in seconds "
                          f"(default: {DEFAULT_TIMEOUT} = 5 minutes). On timeout the "
@@ -38,6 +45,8 @@ def main(argv=None) -> int:
     overall_ok = True
     any_timeout = False
     for i, path in enumerate(args.files):
+        if args.show_movers:
+            _print_movers(path)
         keep = args.emit_bpl if (args.emit_bpl and i == 0) else None
         result = check_program(
             path, boogie_path=args.boogie, keep_bpl=keep, timeout=args.timeout
@@ -53,6 +62,21 @@ def main(argv=None) -> int:
     if any_timeout:
         return EXIT_TIMEOUT
     return EXIT_OK if overall_ok else EXIT_FAILED
+
+
+def _print_movers(path: str) -> None:
+    """Best-effort annotated listing; front-end errors surface via the
+    subsequent verification pass, so they are not repeated here."""
+    try:
+        with open(path) as f:
+            source = f.read()
+        prog = parse(source, path)
+        ti = check_types(prog)
+    except (OSError, MelvinError):
+        return
+    print(f"== {path} (movers) ==")
+    print(render_listing(source, mover_annotations(prog, ti)))
+    print()
 
 
 if __name__ == "__main__":

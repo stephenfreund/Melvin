@@ -208,6 +208,29 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 }
 .gutter-error { color: var(--bad); font-weight: 700; cursor: pointer; }
 .melvin-errors { width: 14px; }
+.melvin-movers { width: 20px; }
+
+/* Vertically center gutter markers (mover chips, error dots) in their line:
+   CodeMirror positions marker elements at the line top with content height,
+   so stretch the wrapper + marker over the full line and flex-center. */
+.CodeMirror-gutter-wrapper { top: 0; bottom: 0; }
+.CodeMirror-gutter-wrapper .CodeMirror-gutter-elt:not(.CodeMirror-linenumber) {
+  top: 0; bottom: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+
+.mover-chip {
+  width: 16px; height: 16px;
+  border-radius: 4px; text-align: center;
+  font: 700 11px/16px ui-monospace, Menlo, monospace;
+  color: #fff; cursor: default;
+}
+.mover-B { background: #3b78c4; }   /* both-mover   */
+.mover-R { background: #2e9e56; }   /* right-mover  */
+.mover-L { background: #e08a1a; }   /* left-mover   */
+.mover-N { background: #8451c9; }   /* non-mover    */
+.mover-Y { background: #8a939e; }   /* yield        */
+.mover-E { background: #c62828; }   /* no mover applies */
 
 /* ------------------------------------------------------------- narrow */
 

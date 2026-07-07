@@ -62,9 +62,38 @@ melvin examples/counter.mml                 # verify one program
 melvin examples/*.mml                        # verify several
 python -m melvin examples/counter.mml        # equivalent, no console script
 melvin examples/counter.mml --show-bpl       # also print the generated Boogie
+melvin examples/counter.mml --show-movers    # print the program with mover letters
 melvin examples/counter.mml --emit-bpl out.bpl   # save the generated Boogie
 melvin --timeout 60 examples/counter.mml     # cap Boogie at 60s for this file
 ```
+
+### Mover annotations (`--show-movers`)
+
+`--show-movers` prints each file with a margin letter classifying every
+statement — `R`/`B`/`L`/`N` for its mover, `Y` at yields — like the annotated
+figures in the paper:
+
+```console
+$ melvin examples/counter.mml --show-movers
+== examples/counter.mml (movers) ==
+   | add() {
+ R |   acquire(m);
+ B |   t = x;          // read of x     (both-mover: lock held)
+ B |   t = t + n;      // local compute (both-mover)
+ B |   x = t;          // write of x    (both-mover: lock held)
+ B |   result = t;     // local
+ L |   release(m);
+   | }
+...
+```
+
+The letters come from the static clause classification, sharpened for actions
+whose transition is known (an `acquire` is the `0 → tid` write, so it shows
+the right-mover clause rather than the join of all clauses); verification
+itself always uses the exact state-sensitive movers in Boogie. Calls to
+atomic functions show the declared atomic mover; calls to non-atomic
+functions get no letter. The web demo displays the same letters as colored
+gutter chips after verification.
 
 ### Running a program (the reference interpreter)
 

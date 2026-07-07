@@ -3,8 +3,10 @@
 A browser front end for Melvin: pick an example (or write your own MLL
 program), press **Verify** to check it with Boogie, or **Run** to execute it
 under all thread interleavings with the reference interpreter. Diagnostics are
-mapped back to the editor; a second tab shows the generated Boogie; share
-links encode the program in the URL.
+mapped back to the editor; after verification each statement gets a colored
+mover-letter chip (R/B/L/N/Y) in the editor gutter, like the paper's annotated
+figures; a second tab shows the generated Boogie; share links encode the
+program in the URL.
 
 ```
 demo/
@@ -94,12 +96,14 @@ All knobs are environment variables (defaults in parentheses):
 | `GET /api/health` | 200 + Boogie path, or 503 if Boogie is missing |
 | `GET /api/examples` | the Examples menu manifest |
 | `GET /api/examples/{name}` | one example's source (allowlisted names only) |
-| `POST /api/verify` `{source}` | `{status, verified, elapsed_ms, diagnostics[], boogie}` |
+| `POST /api/verify` `{source}` | `{status, verified, elapsed_ms, diagnostics[], boogie, movers[]}` |
 | `POST /api/run` `{source}` | `{status, states, trace, elapsed_ms, diagnostics[]}` |
 
 `status` is `verified | rejected | timeout | error` for verify and
 `safe | unsafe | unknown | error` for run. Diagnostics carry 1-based
-`line`/`col`/`end_line`/`end_col` plus a message.
+`line`/`col`/`end_line`/`end_col` plus a message. `movers` is a list of
+`{line, effect}` mover letters (`Y B R L N E`) for the editor gutter, present
+whenever the program parses and type-checks.
 
 Tests live in `tests/test_demo_server.py` (they skip themselves if the demo
 dependencies are not installed).

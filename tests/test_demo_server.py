@@ -116,6 +116,23 @@ def test_verify_racy_bad_has_line_mapped_race(client):
 
 
 @needs_boogie
+def test_verify_returns_mover_annotations(client):
+    src = read_example("counter.mml")
+    body = client.post("/api/verify", json={"source": src}).json()
+    movers = {m["line"]: m["effect"] for m in body["movers"]}
+    lines = src.splitlines()
+    acquire_line = next(i for i, l in enumerate(lines, 1) if "acquire(m);" in l)
+    release_line = next(i for i, l in enumerate(lines, 1) if "release(m);" in l)
+    assert movers[acquire_line] == "R"
+    assert movers[release_line] == "L"
+
+
+def test_verify_front_end_error_has_no_movers(client):
+    body = client.post("/api/verify", json={"source": "var int x ; ;;"}).json()
+    assert body["movers"] == []
+
+
+@needs_boogie
 def test_verify_result_is_cached(client):
     src = read_example("counter.mml")
     client.post("/api/verify", json={"source": src})

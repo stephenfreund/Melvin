@@ -42,6 +42,7 @@ shells out to the executable.
 | `vcgen.py`   | the core — lowers each Mover Logic obligation to a Boogie procedure |
 | `boogie_backend.py` | runs Boogie; `Emitter` records an obligation per emitted `assert`, keyed by line, so failures map back to source |
 | `checker.py` / `cli.py` | driver and `melvin` verify CLI |
+| `annotate.py` | per-statement mover letters (`--show-movers`, demo gutter); static clause join sharpened by a 3-valued evaluator for acquire/release/cas/known-value writes — display only, never used for verification |
 | `interp.py`  | reference small-step interpreter + `melvin-run`; independent differential oracle for the verifier (explores all interleavings, detects reachable `wrong`) |
 
 ### Key design points (read before editing `vcgen.py`)

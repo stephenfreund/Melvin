@@ -34,6 +34,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from melvin.annotate import mover_annotations
 from melvin.boogie_backend import BoogieBackend, BoogieError
 from melvin.checker import check_source
 from melvin.diagnostics import NO_SPAN, MelvinError
@@ -228,6 +229,7 @@ async def verify(req: SourceRequest, request: Request):
         "elapsed_ms": elapsed_ms,
         "diagnostics": [_diag_json(d) for d in result.diagnostics],
         "boogie": result.boogie_text,
+        "movers": _movers_json(req.source),
     }
     if status in ("verified", "rejected"):       # don't cache transient outcomes
         _cache.put(key, payload)
@@ -236,9 +238,22 @@ async def verify(req: SourceRequest, request: Request):
     return payload
 
 
+def _movers_json(source: str) -> list:
+    """Per-line mover letters for the editor gutter ([] if the front end
+    fails — the verify diagnostics already report why)."""
+    try:
+        prog = parse(source, "input.mml")
+        ti = check_types(prog)
+    except MelvinError:
+        return []
+    ann = mover_annotations(prog, ti)
+    return [{"line": line, "effect": eff} for line, eff in sorted(ann.items())]
+
+
 def _error_response(message: str) -> dict:
     return {
         "status": "error", "verified": 0, "elapsed_ms": 0, "boogie": "",
+        "movers": [],
         "diagnostics": [{"line": None, "col": None, "end_line": None,
                          "end_col": None, "kind": "error", "message": message}],
     }

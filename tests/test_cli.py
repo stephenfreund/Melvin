@@ -85,6 +85,26 @@ def test_show_bpl_prints_generated_program(fake_check, capsys):
     assert "// BOOGIE HERE" in capsys.readouterr().out
 
 
+def test_show_movers_prints_annotated_listing(fake_check, capsys, tmp_path):
+    from _util import EXAMPLES
+    f = tmp_path / "counter.mml"
+    f.write_text((EXAMPLES / "counter.mml").read_text())
+    fake_check(CheckResult(ok=True, verified=23))
+    cli.main(["--show-movers", str(f)])
+    out = capsys.readouterr().out
+    assert f"== {f} (movers) ==" in out
+    assert " R |   acquire(m);" in out
+    assert " L |   release(m);" in out
+    assert " Y |   yield;" in out
+
+
+def test_show_movers_missing_file_stays_quiet(fake_check, capsys):
+    # the listing is best-effort; the verification pass reports the error
+    fake_check(CheckResult(ok=False, diagnostics=[]))
+    assert cli.main(["--show-movers", "no_such.mml"]) == cli.EXIT_FAILED
+    assert "(movers)" not in capsys.readouterr().out
+
+
 def test_main_module_entrypoint(monkeypatch):
     import runpy
     import sys

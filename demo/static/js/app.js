@@ -42,7 +42,7 @@
       matchBrackets: true,
       indentUnit: 2,
       tabSize: 2,
-      gutters: ["CodeMirror-linenumbers", "melvin-errors"],
+      gutters: ["CodeMirror-linenumbers", "melvin-movers", "melvin-errors"],
     });
     editor.setOption("theme",
       document.documentElement.getAttribute("data-theme") === "dark"
@@ -65,6 +65,23 @@
     marks.forEach(function (m) { m.clear(); });
     marks = [];
     editor.clearGutter("melvin-errors");
+    editor.clearGutter("melvin-movers");
+  }
+
+  var MOVER_NAMES = {
+    B: "both-mover", R: "right-mover", L: "left-mover",
+    N: "non-mover", Y: "yield", E: "error (no mover applies)",
+  };
+
+  function annotateMovers(movers) {
+    editor.clearGutter("melvin-movers");
+    (movers || []).forEach(function (m) {
+      var chip = document.createElement("div");
+      chip.className = "mover-chip mover-" + m.effect;
+      chip.textContent = m.effect;
+      chip.title = MOVER_NAMES[m.effect] || m.effect;
+      editor.setGutterMarker(m.line - 1, "melvin-movers", chip);
+    });
   }
 
   function annotate(diags) {
@@ -271,6 +288,7 @@
   function renderVerify(res) {
     var out = $("#tab-output");
     out.innerHTML = "";
+    clearAnnotations();
     var secs = (res.elapsed_ms / 1000).toFixed(1) + "s" + (res.cached ? " (cached)" : "");
 
     lastBoogie = res.boogie || "";
@@ -300,6 +318,7 @@
       out.appendChild(diagListEl(res.diagnostics));
       annotate(res.diagnostics);
     }
+    annotateMovers(res.movers);
   }
 
   function diagListEl(diags) {
