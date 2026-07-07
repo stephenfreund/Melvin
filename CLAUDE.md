@@ -14,7 +14,7 @@ Architecturally inspired by the Anchor / Synchronicity verifiers in
 ## Commands
 
 ```bash
-pip install -e ".[test]"                         # install (adds `melvin`, `melvin-run`)
+pip install -e .                                 # install (adds `melvin`, `melvin-run`)
 export MELVIN_BOOGIE=/path/to/boogie          # if boogie isn't on PATH
 melvin examples/counter.mml                   # verify a program
 melvin examples/counter.mml --show-bpl        # print generated Boogie

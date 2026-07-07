@@ -11,9 +11,7 @@ requires-python = ">=3.8"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Melvin implementation" }]
 keywords = ["verification", "concurrency", "reduction", "rely-guarantee", "boogie"]
-
-[project.optional-dependencies]
-test = ["pytest>=7.0"]
+dependencies = ["pytest>=7.0"]
 
 [project.scripts]
 melvin = "melvin.cli:main"

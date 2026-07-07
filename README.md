@@ -42,7 +42,7 @@ Boogie, and maps prover failures back to the original source location.
 
    ```bash
    cd Melvin
-   pip install -e .            # or: pip install -e ".[test]" for the test deps
+   pip install -e .
    ```
 
 3. Point the tool at your Boogie executable (only needed if `boogie` is not on
@@ -159,7 +159,7 @@ them); change `add`'s postcondition to `x == \old(x) + 1` and you get
 ## Running the tests
 
 ```bash
-pip install -e ".[test]"
+pip install -e .
 pytest tests/ -q
 ```
 
