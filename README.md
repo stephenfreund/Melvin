@@ -1,6 +1,6 @@
 # Melvin
 
-<img width="120" height="120" alt="melvin-small" src="https://github.com/user-attachments/assets/9f2d1c59-23db-496d-83fe-2ba91271c689" />
+<img width="200" height="200" alt="melvin-small" src="media/mevlin-small.png" />
 
 **Melvin** is a verifier for **Mover Logic** — the reduction-based
 rely-guarantee program logic of
