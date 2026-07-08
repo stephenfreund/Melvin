@@ -531,6 +531,8 @@ class TypeChecker:
         # lhs is a local
         if lhs == "result":
             if globals_in_rhs or field_reads:
+                # `result = <shared>` would be a shared read with no mover
+                # check: reject it like any other compound shared read
                 raise TypeError_(
                     "the right-hand side of an assignment to result may only "
                     "reference thread-local variables; read shared state into "
