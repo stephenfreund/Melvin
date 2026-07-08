@@ -1,0 +1,65 @@
+// Differential-oracle example (objects, SAFE): threads share a Cell through a
+// published global reference; all updates go through the lock-protected add2
+// method, which preserves evenness of every cell (+2 keeps parity), so each
+// worker can track the parity of its own cell across yields via the
+// quantified rely.  The verifier accepts this program, and `melvin-run` must
+// find no reachable `wrong` in any interleaving.
+
+class Cell {
+  var int v   both-mover if this.m == tid;
+  lock m  write right-mover if \old(this.m) == 0 && this.m == tid
+          write left-mover  if \old(this.m) == tid && this.m == 0
+          read  both-mover  if this.m == tid;
+
+  atomic
+  requires true
+  ensures  this.v == \old(this.v) + 2 && result == this.v
+           && this.m == \old(this.m)
+  add2() {
+    acquire(this.m);
+    t = this.v;
+    t = t + 2;
+    this.v = t;
+    result = t;
+    release(this.m);
+  }
+}
+
+var Cell shared  non-mover;
+
+relies     forall c : Cell . (even(\old(c.v)) ==> even(c.v))
+guarantees forall c : Cell . (even(\old(c.v)) ==> even(c.v))
+requires   true
+ensures    true
+worker() {
+  yield;
+  c = new Cell;          // own cell: v == 0
+  r = c.add2();
+  assert even(r);
+  yield;
+  r = c.add2();          // rely kept c.v even across the yield
+  assert even(r);
+  yield;
+  s = shared;
+  yield;
+  if (!(s == null)) {
+    s.add2();            // lock-safe update of the shared cell
+  }
+  yield;
+}
+
+relies     forall c : Cell . (even(\old(c.v)) ==> even(c.v))
+guarantees forall c : Cell . (even(\old(c.v)) ==> even(c.v))
+requires   true
+ensures    true
+publisher() {
+  yield;
+  c = new Cell;
+  shared = c;
+  yield;
+}
+
+init shared == null;
+
+thread { publisher(); }
+thread { worker(); }

@@ -1,0 +1,43 @@
+// Differential-oracle example (objects, UNSAFE): the reader asserts a value
+// the writer never guarantees, so some interleaving reaches `wrong`.  The
+// verifier must reject this program, and `melvin-run` must find the failing
+// interleaving (reader observes s.v == 1, not 2).
+
+class Cell {
+  var int v  non-mover;
+}
+
+var Cell shared  non-mover;
+
+relies     true
+guarantees true
+requires   true
+ensures    true
+writer() {
+  yield;
+  c = new Cell;
+  c.v = 1;
+  yield;
+  shared = c;
+  yield;
+}
+
+relies     true
+guarantees true
+requires   true
+ensures    true
+reader() {
+  yield;
+  s = shared;
+  yield;
+  if (!(s == null)) {
+    t = s.v;
+    assert t == 2;      // WRONG: the writer stored 1
+  }
+  yield;
+}
+
+init shared == null;
+
+thread { writer(); }
+thread { reader(); }

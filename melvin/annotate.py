@@ -64,6 +64,10 @@ def _eval(e: A.Expr, cur: Dict[str, object], old: Dict[str, object]):
         return TID
     if isinstance(e, A.Var):
         return cur.get(e.name, UNKNOWN)
+    if isinstance(e, A.FieldAccess):
+        # in a field clause guard, `this` is the accessed receiver, so
+        # `this.f` is the transition-bound field (keyed by field name)
+        return cur.get(("fld", e.field), UNKNOWN)
     if isinstance(e, A.Old):
         return _eval(e.inner, old, old)
     if isinstance(e, A.Unary):
@@ -137,6 +141,19 @@ def _transition_mover(low: Lowerer, gname: str, old_val, new_val) -> Effect:
     return join_all(cl.mover for cl in keep)
 
 
+def _transition_field_mover(low: Lowerer, cls: str, fld: str,
+                            old_val, new_val) -> Effect:
+    """Field analogue: the transition binds the accessed receiver's field
+    `this.fld`; other fields of the receiver stay UNKNOWN."""
+    clauses = low._field_clauses(cls, fld, "write")
+    cur = {("fld", fld): new_val}
+    old = {("fld", fld): old_val}
+    keep = [cl for cl in clauses if _eval(cl.cond, cur, old) is not False]
+    if not keep:
+        return Effect.E
+    return join_all(cl.mover for cl in keep)
+
+
 class _Annotator:
     """Mirrors Lowerer._stmt_static, refining acquire/release/cas letters."""
 
@@ -150,9 +167,20 @@ class _Annotator:
 
     def stmt_eff(self, s: A.Stmt, ctx: _Ctx) -> Effect:
         if isinstance(s, A.Acquire):
+            if s.lock_expr is not None:
+                cls = self.ti.expr_class[id(s.lock_expr)]
+                return _transition_field_mover(self.low, cls, s.lock, 0, TID)
             return _transition_mover(self.low, s.lock, 0, TID)
         if isinstance(s, A.Release):
+            if s.lock_expr is not None:
+                cls = self.ti.expr_class[id(s.lock_expr)]
+                return _transition_field_mover(self.low, cls, s.lock, TID, 0)
             return _transition_mover(self.low, s.lock, TID, 0)
+        if isinstance(s, A.FieldWrite):
+            kind, gvar = self.ti.assign_kind[id(s)]
+            cls, fld = gvar.split(".", 1)
+            return _transition_field_mover(self.low, cls, fld,
+                                           UNKNOWN, _abstract(s.rhs))
         if isinstance(s, A.Assign):
             kind, _ = self.ti.assign_kind[id(s)]
             if kind == "write":
@@ -180,6 +208,11 @@ class _Annotator:
             return self.cond_eff(c.inner, not success)
         if isinstance(c, A.CasCond):
             if success:
+                if c.target_expr is not None:
+                    cls = self.ti.expr_class[id(c.target_expr)]
+                    return _transition_field_mover(
+                        self.low, cls, c.target,
+                        _abstract(c.expected), _abstract(c.new))
                 return _transition_mover(
                     self.low, c.target, _abstract(c.expected), _abstract(c.new))
             return Effect.B          # failing cas is a store identity
@@ -203,7 +236,7 @@ class _Annotator:
                 self.walk(s.body, ctx)
 
     def _atomic_callee(self, s: A.Call_) -> bool:
-        callee = self.prog.find_func(s.name)
+        callee = self.prog.find_func(self.ti.call_target.get(id(s), s.name))
         return callee is not None and callee.is_atomic
 
     def run(self) -> Dict[int, Effect]:

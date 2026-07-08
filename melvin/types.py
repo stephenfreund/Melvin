@@ -247,6 +247,10 @@ class TypeChecker:
             for cl in v.clauses:
                 self._infer(cl.cond, BOOL, env)
 
+        # the init predicate is a one-store predicate over the globals
+        if self.prog.init is not None:
+            self._infer(self.prog.init.pred, BOOL, _Env(self, scope=None))
+
         # field mover-clause conditions: over this, this's fields, and tid only.
         # Element ([i]) clauses of array fields are state-independent: they may
         # mention only tid and the index variable.

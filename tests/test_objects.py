@@ -362,6 +362,97 @@ def test_slot_value_lost_without_rely():
     assert not res.ok
 
 
+# -------------------------------------------------- interpreter (oracle)
+
+from melvin.interp import Interpreter
+
+
+def interp(src):
+    return Interpreter(parse(src, "t.mml"), max_states=100_000).explore()
+
+
+def test_interp_object_counter_safe():
+    r = interp(COUNTER)
+    assert not r.wrong_reachable and not r.hit_bound
+
+
+def test_interp_oracle_safe_exhaustive():
+    r = interp((EXAMPLES / "obj_oracle_safe.mml").read_text())
+    assert not r.wrong_reachable and not r.hit_bound
+
+
+def test_interp_oracle_unsafe_found():
+    r = interp((EXAMPLES / "obj_oracle_unsafe.mml").read_text())
+    assert r.wrong_reachable
+
+
+def test_interp_array_example_safe():
+    r = interp((EXAMPLES / "obj_array.mml").read_text())
+    assert not r.wrong_reachable and not r.hit_bound
+
+
+def test_interp_null_deref_goes_wrong():
+    src = ("class C { var int x  non-mover; }\n"
+           "atomic requires true ensures true f(C c) { t = c.x; }\n"
+           "thread { c2 = null; f(c2); }\n")
+    assert interp(src).wrong_reachable
+
+
+def test_interp_out_of_bounds_goes_wrong():
+    src = ("class T { var int[] a  non-mover [i] non-mover; }\n"
+           "atomic requires true ensures true f() {\n"
+           "  t = new T; b = new int[1]; t.a = b; v = b[1];\n"
+           "}\nthread { f(); }\n")
+    assert interp(src).wrong_reachable
+
+
+def test_interp_method_call_binds_receiver_and_args():
+    src = """
+class C {
+  var int x  non-mover;
+  atomic requires true ensures true set(int n) { this.x = n; }
+}
+atomic requires true ensures true f() {
+  a = new C;
+  b = new C;
+  a.set(1);
+  b.set(2);
+  t = a.x;
+  assert t == 1;
+  u = b.x;
+  assert u == 2;
+}
+thread { f(); }
+"""
+    r = interp(src)
+    assert not r.wrong_reachable and not r.hit_bound
+
+
+def test_interp_this_restored_after_nested_call():
+    src = """
+class C {
+  var int x  non-mover;
+  atomic requires true ensures true set(int n) { this.x = n; }
+  atomic requires true ensures true poke(C other) {
+    other.set(9);
+    this.x = 1;       // `this` must still be the original receiver
+  }
+}
+atomic requires true ensures true f() {
+  a = new C;
+  b = new C;
+  a.poke(b);
+  t = a.x;
+  assert t == 1;
+  u = b.x;
+  assert u == 9;
+}
+thread { f(); }
+"""
+    r = interp(src)
+    assert not r.wrong_reachable and not r.hit_bound
+
+
 def test_untyped_null_receiver_is_type_error():
     with pytest.raises(MelvinError, match="cannot determine the class"):
         tc("class C { var int x  non-mover; }\n"

@@ -24,6 +24,7 @@ VERIFYING = [
     "obj_counter.mml",
     "obj_counter_client.mml",
     "obj_array.mml",
+    "obj_oracle_safe.mml",
 ]
 
 # Programs that must be rejected, with a substring expected in some diagnostic.
@@ -35,6 +36,7 @@ REJECTED = {
     "rely_not_transitive.mml": "not transitive",
     "rely_not_reflexive.mml": "not reflexive",
     "obj_racy_bad.mml": "race",
+    "obj_oracle_unsafe.mml": "assertion",
 }
 
 

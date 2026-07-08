@@ -35,8 +35,24 @@ class InterpError(Exception):
     pass
 
 
-# A store value is an int, a tuple (immutable list), or ("some", v) / None.
+class StuckWrong(Exception):
+    """A run-time fault (null dereference, out-of-bounds index, negative
+    allocation size): the step goes wrong, exactly like `wrong`."""
+
+
+# A store value is an int, a tuple (immutable list), ("some", v) / None, or a
+# heap reference ("ref", TypeName, addr) with addr >= 1.  All null references
+# are the single value NULL, so `x == null` is plain equality.
 NilVal = ()          # empty immutable list
+NULL = ("ref", None, 0)
+
+
+# Heap layout inside the flat store dict (all keys hashable, so the existing
+# freeze/DFS machinery applies unchanged):
+#   ("next", T)          -> next fresh address for class/array type T
+#   ("fld", C, a, f)     -> value of field f of object a of class C
+#   ("len", AT, a)       -> length of array a of array type AT
+#   ("elem", AT, a, i)   -> element i of array a (absent = type default 0)
 
 
 @dataclass(frozen=True)
@@ -44,6 +60,19 @@ class ThreadState:
     """One thread: a stack of statements to run, plus its \\old snapshot key."""
     cont: Tuple                     # tuple of AST statement nodes (a stack)
     old_snapshot: Tuple             # frozen store items at the last yield
+
+
+@dataclass(frozen=True)
+class _Marker:
+    """A continuation marker for call save/restore, interned per call site so
+    the DFS state key (which hashes continuation node identities) stays
+    finite.  `kind` is "restore" (payload: names to restore) or "bindresult"
+    (payload: the local receiving `result`).  Nested recursive calls through
+    the same site share one save slot, so save/restore is exact only to
+    recursion depth 1 -- adequate for an oracle."""
+    kind: str
+    payload: object
+    sid: int
 
 
 @dataclass
@@ -57,10 +86,19 @@ class ExploreResult:
 class Interpreter:
     def __init__(self, prog: A.Program, max_states: int = 200_000,
                  loop_bound: int = 1000):
+        # (re-)run the checker: it desugars `x = f(args)` into Call_ statements,
+        # validates the program, and yields the type tables (nominal array
+        # types, resolved call targets) the heap semantics needs
+        from .types import check_types
+        self.ti = check_types(prog)
         self.prog = prog
         self.max_states = max_states
         self.loop_bound = loop_bound
         self.globals = [v.name for v in prog.vars]
+        self.classes = {c.name: c for c in prog.classes}
+        # interned continuation markers for call save/restore (stable identity
+        # per call site, so the DFS state key stays finite)
+        self._markers: Dict[Tuple[int, str], object] = {}
 
     # ------------------------------------------------------------ store
     def _initial_store(self) -> Dict:
@@ -72,13 +110,25 @@ class Interpreter:
             self._apply_init(self.prog.init.pred, store)
         return store
 
-    @staticmethod
-    def _default(ty: A.TypeExpr):
+    def _default(self, ty: A.TypeExpr):
+        if ty.is_array:
+            return 0     # top-level globals of type T[] keep value semantics
         if ty.name == "List":
             return NilVal
         if ty.name == "Optional":
             return None
+        if ty.name in self.classes:
+            return NULL
         return 0
+
+    def _field_default(self, cls: str, fld: A.VarDecl):
+        if fld.type.is_array or fld.type.name in self.classes:
+            return NULL
+        return self._default(fld.type)
+
+    @staticmethod
+    def _arrtype(cls: str, fld: str) -> str:
+        return f"Arr_{cls}_{fld}"
 
     def _apply_init(self, pred: A.Expr, store: Dict) -> None:
         # Handle conjunctions of `g == literal` to pick a concrete initial store.
@@ -104,11 +154,16 @@ class Interpreter:
             return tid
         if t is A.Result:
             return store.get(("result", tid), 0)
+        if t is A.NullLit:
+            return NULL
         if t is A.Old:
             src = old if old is not None else store
             return self._eval(e.inner, src, src, tid)
         if t is A.Var:
             return self._read_var(e.name, store, tid)
+        if t is A.FieldAccess:
+            ref = self._eval(e.base, store, old, tid)
+            return self._read_field(ref, e.field, store)
         if t is A.Unary:
             v = self._eval(e.operand, store, old, tid)
             return (not v) if e.op == "!" else (-v)
@@ -119,44 +174,53 @@ class Interpreter:
         if t is A.Index:
             base = self._eval(e.base, store, old, tid)
             idx = self._eval(e.index, store, old, tid)
+            if isinstance(base, tuple) and len(base) == 3 and base[0] == "ref":
+                return self._read_elem(base, idx, store)
             return base[idx] if isinstance(base, (list, tuple)) else 0
         if t is A.Quant:
-            lo = self._eval(e.lo, store, old, tid)
-            hi = self._eval(e.hi, store, old, tid)
             results = []
-            for i in range(lo, hi):
-                # bind the quantifier variable by shadowing in a temp scope
-                results.append(self._eval_with_binding(e.body, store, old, tid, e.var, i))
+            for val in self._quant_range(e, store, old, tid):
+                shadow = dict(store)
+                shadow[("__bound", e.var)] = val
+                results.append(self._eval(e.body, shadow, old, tid))
             if e.kind == "forall":
                 return all(results)
             return any(results)
         raise InterpError(f"cannot evaluate {t.__name__}")
 
-    def _eval_with_binding(self, e, store, old, tid, name, val):
-        # simple binding via a shadow store entry keyed by the bound name
-        shadow = dict(store)
-        shadow[("__bound", name)] = val
-        return self._eval_bound(e, shadow, old, tid)
+    def _quant_range(self, e: A.Quant, store, old, tid):
+        if e.cls is None:
+            lo = self._eval(e.lo, store, old, tid)
+            hi = self._eval(e.hi, store, old, tid)
+            return range(lo, hi)
+        if e.cls == "int":
+            # unbounded int quantifier: sample a small adversarial window
+            return range(-2, 5)
+        if "." in e.cls:
+            cname, fname = e.cls.split(".", 1)
+            at = self._arrtype(cname, fname)
+        else:
+            at = e.cls
+        n = store.get(("next", at), 1)
+        return [("ref", at, a) for a in range(1, n)]
 
-    def _eval_bound(self, e, store, old, tid):
-        if isinstance(e, A.Var) and ("__bound", e.name) in store:
-            return store[("__bound", e.name)]
-        # fall back to normal eval but keep bindings visible for nested vars
-        t = type(e)
-        if t is A.Binary:
-            l = self._eval_bound(e.left, store, old, tid)
-            r = self._eval_bound(e.right, store, old, tid)
-            return self._apply_op(e.op, l, r)
-        if t is A.Index:
-            base = self._eval_bound(e.base, store, old, tid)
-            idx = self._eval_bound(e.index, store, old, tid)
-            return base[idx] if isinstance(base, (list, tuple)) else 0
-        if t is A.Unary:
-            v = self._eval_bound(e.operand, store, old, tid)
-            return (not v) if e.op == "!" else (-v)
-        return self._eval(e, store, old, tid)
+    def _read_field(self, ref, field: str, store: Dict):
+        if not (isinstance(ref, tuple) and len(ref) == 3 and ref[0] == "ref") \
+                or ref[2] == 0:
+            raise StuckWrong("null dereference")
+        return store.get(("fld", ref[1], ref[2], field), 0)
+
+    def _read_elem(self, ref, idx, store: Dict):
+        if ref[2] == 0:
+            raise StuckWrong("null array")
+        n = store.get(("len", ref[1], ref[2]), 0)
+        if not (0 <= idx < n):
+            raise StuckWrong("index out of bounds")
+        return store.get(("elem", ref[1], ref[2], idx), 0)
 
     def _read_var(self, name: str, store: Dict, tid: int):
+        if ("__bound", name) in store:
+            return store[("__bound", name)]
         if name in self.globals:
             return store[name]
         return store.get((name, tid), 0)         # thread-locals default to 0
@@ -206,6 +270,12 @@ class Interpreter:
 
     def _eval_call(self, e: A.Call, store, old, tid):
         args = [self._eval(a, store, old, tid) for a in e.args]
+        if e.name == "length":
+            ref = args[0]
+            if not (isinstance(ref, tuple) and len(ref) == 3 and ref[0] == "ref") \
+                    or ref[2] == 0:
+                raise StuckWrong("length of null array")
+            return store.get(("len", ref[1], ref[2]), 0)
         if e.name == "head":
             return args[0][0] if args[0] else 0
         if e.name == "tail":
@@ -284,6 +354,19 @@ class Interpreter:
         """Return a list of (new ThreadState, new store dict, wrong?) successors
         for one small step of thread `tid`.  An empty list means the thread is
         finished or blocked."""
+        try:
+            return self._step_inner(tid, ts, store)
+        except StuckWrong:
+            # a run-time fault (null dereference, bad index, bad allocation)
+            return [(ThreadState(ts.cont[1:], ts.old_snapshot), dict(store), True)]
+
+    def _marker(self, sid: int, kind: str, payload) -> "_Marker":
+        key = (sid, kind)
+        if key not in self._markers:
+            self._markers[key] = _Marker(kind, payload, sid)
+        return self._markers[key]
+
+    def _step_inner(self, tid: int, ts: ThreadState, store: Dict):
         if not ts.cont:
             return []
         head = ts.cont[0]
@@ -293,6 +376,18 @@ class Interpreter:
             new_cont = tuple(new_head_list) + rest
             return [(ThreadState(new_cont, snapshot), dict(new_store), False)]
 
+        if isinstance(head, _Marker):
+            s2 = dict(store)
+            if head.kind == "restore":
+                for name in head.payload:
+                    saved = s2.pop(("save", head.sid, name, tid), None)
+                    if saved is None:
+                        s2.pop((name, tid), None)
+                    else:
+                        s2[(name, tid)] = saved
+            else:  # "bindresult"
+                s2[(head.payload, tid)] = s2.get(("result", tid), 0)
+            return cont([], s2)
         if isinstance(head, A.Skip):
             return cont([])
         if isinstance(head, A.Yield):
@@ -306,13 +401,52 @@ class Interpreter:
             return [(ThreadState(rest, ts.old_snapshot), dict(store), not ok)]
         if isinstance(head, A.Assign):
             s2 = dict(store)
-            val = self._eval(head.rhs, store, dict(ts.old_snapshot), tid)
+            if isinstance(head.rhs, A.New):
+                val = self._allocate(head.rhs.cls, s2)
+            elif isinstance(head.rhs, A.NewArray):
+                cls = head.rhs
+                size = self._eval(cls.size, store, dict(ts.old_snapshot), tid)
+                if size < 0:
+                    raise StuckWrong("negative array size")
+                at = self.ti.expr_class[id(head.rhs)]   # nominal array type
+                addr = s2.get(("next", at), 1)
+                s2[("next", at)] = addr + 1
+                s2[("len", at, addr)] = size
+                val = ("ref", at, addr)
+            else:
+                val = self._eval(head.rhs, store, dict(ts.old_snapshot), tid)
             self._write_var(head.lhs, val, s2, tid)
+            return cont([], s2)
+        if isinstance(head, A.FieldWrite):
+            ref = self._eval(head.base, store, dict(ts.old_snapshot), tid)
+            if not (isinstance(ref, tuple) and len(ref) == 3 and ref[0] == "ref") \
+                    or ref[2] == 0:
+                raise StuckWrong("null dereference")
+            val = self._eval(head.rhs, store, dict(ts.old_snapshot), tid)
+            s2 = dict(store)
+            s2[("fld", ref[1], ref[2], head.field)] = val
+            return cont([], s2)
+        if isinstance(head, A.ArrayWrite):
+            ref = self._eval(head.base, store, dict(ts.old_snapshot), tid)
+            if not (isinstance(ref, tuple) and len(ref) == 3 and ref[0] == "ref") \
+                    or ref[2] == 0:
+                raise StuckWrong("null array")
+            idx = self._eval(head.index, store, dict(ts.old_snapshot), tid)
+            n = store.get(("len", ref[1], ref[2]), 0)
+            if not (0 <= idx < n):
+                raise StuckWrong("index out of bounds")
+            val = self._eval(head.rhs, store, dict(ts.old_snapshot), tid)
+            s2 = dict(store)
+            s2[("elem", ref[1], ref[2], idx)] = val
             return cont([], s2)
         if isinstance(head, A.UnstableRead):
             # nondeterministic: the current value, plus a few type-appropriate
             # adversarial ones (an unstable read may load any value).
-            src = self._read_var(head.source, store, tid)
+            if head.source_expr is not None:
+                ref = self._eval(head.source_expr.base, store, None, tid)
+                src = self._read_field(ref, head.source, store)
+            else:
+                src = self._read_var(head.source, store, tid)
             candidates = {src}
             if isinstance(src, int) and not isinstance(src, bool):
                 candidates |= {0, 1}
@@ -323,11 +457,25 @@ class Interpreter:
                 outs.append((ThreadState(rest, ts.old_snapshot), s2, False))
             return outs
         if isinstance(head, A.Acquire):
+            if head.lock_expr is not None:
+                ref = self._eval(head.lock_expr.base, store, None, tid)
+                cur = self._read_field(ref, head.lock, store)
+                if cur != 0:
+                    return []                                  # blocked
+                s2 = dict(store)
+                s2[("fld", ref[1], ref[2], head.lock)] = tid
+                return cont([], s2)
             if store[head.lock] == 0:
                 s2 = dict(store); s2[head.lock] = tid         # tid is 1-based
                 return cont([], s2)
             return []                                          # blocked
         if isinstance(head, A.Release):
+            if head.lock_expr is not None:
+                ref = self._eval(head.lock_expr.base, store, None, tid)
+                self._read_field(ref, head.lock, store)        # null check
+                s2 = dict(store)
+                s2[("fld", ref[1], ref[2], head.lock)] = 0
+                return cont([], s2)
             s2 = dict(store); s2[head.lock] = 0
             return cont([], s2)
         if isinstance(head, A.If):
@@ -342,10 +490,42 @@ class Interpreter:
                                      ts.old_snapshot), s2, False)]
             return [(ThreadState(rest, ts.old_snapshot), s2, False)]
         if isinstance(head, A.Call_):
-            callee = self.prog.find_func(head.name)
-            return [(ThreadState(tuple(callee.body) + rest, ts.old_snapshot),
-                     dict(store), False)]
+            target = self.ti.call_target.get(id(head), head.name)
+            callee = self.prog.find_func(target)
+            s2 = dict(store)
+            sid = id(head)
+            saved_names = []
+            if head.receiver is not None:
+                ref = self._eval(head.receiver, store, None, tid)
+                if not (isinstance(ref, tuple) and len(ref) == 3
+                        and ref[0] == "ref") or ref[2] == 0:
+                    raise StuckWrong("null receiver")
+                if ("this", tid) in s2:
+                    s2[("save", sid, "this", tid)] = s2[("this", tid)]
+                s2[("this", tid)] = ref
+                saved_names.append("this")
+            for p, arg in zip(callee.params, head.args):
+                val = self._eval(arg, store, None, tid)
+                if (p.name, tid) in s2:
+                    s2[("save", sid, p.name, tid)] = s2[(p.name, tid)]
+                s2[(p.name, tid)] = val
+                saved_names.append(p.name)
+            tail = ()
+            if saved_names:
+                tail += (self._marker(sid, "restore", tuple(saved_names)),)
+            if head.assign_to is not None and head.assign_to != "result":
+                tail += (self._marker(sid, "bindresult", head.assign_to),)
+            return [(ThreadState(tuple(callee.body) + tail + rest,
+                                 ts.old_snapshot), s2, False)]
         raise InterpError(f"cannot step {type(head).__name__}")
+
+    def _allocate(self, cls: str, store: Dict):
+        addr = store.get(("next", cls), 1)
+        store[("next", cls)] = addr + 1
+        cdecl = self.classes[cls]
+        for fld in cdecl.fields:
+            store[("fld", cls, addr, fld.name)] = self._field_default(cls, fld)
+        return ("ref", cls, addr)
 
     def _cond(self, c: A.Cond, store: Dict, tid: int):
         """Evaluate a conditional action; return (succeeded?, new_store)."""
@@ -356,6 +536,15 @@ class Interpreter:
             return bool(self._eval(c.expr, store, None, tid)), store
         if isinstance(c, A.CasCond):
             expected = self._eval(c.expected, store, None, tid)
+            if c.target_expr is not None:
+                ref = self._eval(c.target_expr.base, store, None, tid)
+                cur = self._read_field(ref, c.target, store)
+                if cur == expected:
+                    s2 = dict(store)
+                    s2[("fld", ref[1], ref[2], c.target)] = \
+                        self._eval(c.new, store, None, tid)
+                    return True, s2
+                return False, store
             if store[c.target] == expected:
                 s2 = dict(store); s2[c.target] = self._eval(c.new, store, None, tid)
                 return True, s2
