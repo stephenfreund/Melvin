@@ -224,13 +224,61 @@ thread { w(); }
 thread { w(); }
 """
     r = _explore(src)
-    # both interleavings publish some fresh cell with v == 7 (the loser's
-    # cell is unreachable garbage): one canonical final state
+    # Each thread still holds its own cell in the local `a`, so both cells are
+    # live (rooted at the locals) and are labelled with their allocating
+    # thread.  Address renumbering still collapses the many interleavings, but
+    # the two outcomes -- t1 published vs t2 published -- stay distinct because
+    # the published cell (#1) records a different allocator in each.
     assert r.finals_complete
-    assert len(r.finals) == 1
-    f = r.finals[0]
-    assert f["globals"] == {"shared": "#1"}
-    assert f["objects"] == [{"id": "#1", "class": "Cell", "fields": {"v": 7}}]
+    assert len(r.finals) == 2
+    for f in r.finals:
+        assert f["globals"] == {"shared": "#1"}
+        assert [(o["id"], o["class"], o["fields"]) for o in f["objects"]] == [
+            ("#1", "Cell", {"v": 7}), ("#2", "Cell", {"v": 7})]
+    # #1 is the published cell; across the two finals it is allocated by each
+    # thread in turn.
+    assert sorted(f["objects"][0]["allocated_by"] for f in r.finals) == [1, 2]
+
+
+def test_finals_root_at_locals_identify_allocator():
+    # Objects a thread allocates and still holds via a local appear in the
+    # finals even with no globals, each tagged with its allocating thread.
+    src = (EXAMPLES / "obj_counter_client.mml").read_text()
+    r = _explore(src)
+    assert r.finals_complete and len(r.finals) == 1
+    objs = r.finals[0]["objects"]
+    assert r.finals[0]["globals"] == {}
+    assert sorted((o["class"], o["allocated_by"]) for o in objs) == [
+        ("Counter", 1), ("Counter", 2)]
+
+
+def test_finals_true_garbage_still_collapses():
+    # An object no root can reach (the local is overwritten with null) is
+    # dropped, so the owner-blind collapse of unreachable garbage still holds.
+    src = """
+class Cell { var int v  non-mover; }
+var Cell shared  non-mover;
+func w() {
+  yield;
+  a = new Cell;
+  a.v = 7;
+  shared = a;
+  a = null;
+  yield;
+}
+init shared == null;
+thread { w(); }
+thread { w(); }
+"""
+    r = _explore(src)
+    # The loser's cell is unreachable (its local is null) and dropped, so every
+    # final has exactly ONE object -- the published cell.  The two finals differ
+    # only by which thread published last (recorded as the allocator).
+    assert r.finals_complete and len(r.finals) == 2
+    for f in r.finals:
+        assert f["globals"] == {"shared": "#1"}
+        assert [(o["id"], o["fields"]) for o in f["objects"]] == [("#1", {"v": 7})]
+    assert sorted(f["objects"][0]["allocated_by"] for f in r.finals) == [1, 2]
 
 
 def test_trace_store_shows_objects():

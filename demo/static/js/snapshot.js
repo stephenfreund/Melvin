@@ -37,6 +37,13 @@ var Snapshot = (function () {
     return e;
   }
 
+  // Box/table heading for a heap object: "Counter  #1  (alloc t1)".
+  function objTitle(o) {
+    var t = o.class + "  " + o.id;
+    if (o.allocated_by != null) t += "  (alloc t" + o.allocated_by + ")";
+    return t;
+  }
+
   function objectDiagram(objects) {
     var g = new dagre.graphlib.Graph();
     g.setGraph({ rankdir: "LR", nodesep: 24, ranksep: 40, marginx: 8, marginy: 8 });
@@ -47,7 +54,7 @@ var Snapshot = (function () {
 
     objects.forEach(function (o) {
       var fields = Object.keys(o.fields || {});
-      var widest = (o.class + " " + o.id).length;
+      var widest = objTitle(o).length;
       fields.forEach(function (f) {
         widest = Math.max(widest, (f + " = " + o.fields[f]).length);
       });
@@ -111,7 +118,7 @@ var Snapshot = (function () {
       var title = svgEl("text", {
         x: x + PAD, y: y + TITLE_H - 6, class: "snap-box-title",
       });
-      title.textContent = o.class + "  " + o.id;
+      title.textContent = objTitle(o);
       grp.appendChild(title);
       Object.keys(o.fields || {}).forEach(function (f, i) {
         var v = String(o.fields[f]);
@@ -146,7 +153,7 @@ var Snapshot = (function () {
     } else if (objects.length) {
       // dagre missing: fall back to tables
       objects.forEach(function (o) {
-        root.appendChild(kvTable(o.class + " " + o.id, o.fields || {}));
+        root.appendChild(kvTable(objTitle(o), o.fields || {}));
       });
     }
     if (!root.childNodes.length ||

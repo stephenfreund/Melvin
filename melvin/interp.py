@@ -382,13 +382,22 @@ class Interpreter:
         return [f.name for f in c.fields] if c else []
 
     def _final_canon(self, frozen_store: Tuple) -> Tuple:
-        """Canonical form of a final store: the globals plus the heap
-        REACHABLE from them, with heap addresses renumbered in deterministic
-        traversal order, so isomorphic heaps coincide and dead thread-locals
-        (and unreachable garbage) are ignored."""
+        """Canonical form of a final store: the globals plus the heap REACHABLE
+        from the globals AND from every thread's still-live locals, with heap
+        addresses renumbered in deterministic traversal order so isomorphic
+        heaps coincide.  Rooting at the locals keeps objects a thread allocated
+        and still holds (like `c` in each client) instead of discarding them as
+        garbage; each object node also carries its allocating thread, so two
+        threads' otherwise-identical objects stay distinct."""
         store = dict(frozen_store)
         globals_items = sorted(
             (k, v) for k, v in store.items() if isinstance(k, str))
+        # thread-local roots: keys (name, tid); visit in (tid, name) order so
+        # the renumbering -- and hence the canonical form -- is deterministic.
+        local_roots = sorted(
+            (k, v) for k, v in store.items()
+            if isinstance(k, tuple) and len(k) == 2
+            and isinstance(k[0], str) and isinstance(k[1], int))
 
         idmap: Dict[Tuple, int] = {}
         order: List[Tuple] = []
@@ -404,6 +413,8 @@ class Interpreter:
 
         for _k, v in globals_items:
             visit(v)
+        for (_name, _tid), v in local_roots:
+            visit(v)
 
         def cv(v):
             if self._is_ref(v):
@@ -413,15 +424,16 @@ class Interpreter:
         nodes = []
         for ref in order:
             t, a = ref[1], ref[2]
+            owner = store.get(("owner", t, a))
             if t in self.classes:
-                nodes.append((t, tuple(
+                nodes.append((t, owner, tuple(
                     (fld, cv(store.get(("fld", t, a, fld), 0)))
                     for fld in sorted(self._class_fields(t)))))
             else:                             # a heap array
                 n = store.get(("len", t, a), 0)
                 elems = tuple(store.get(("elem", t, a, i), 0)
                               for i in range(min(n, 4096)))
-                nodes.append((t, ("len", n), elems))
+                nodes.append((t, owner, ("len", n), elems))
         return (tuple((k, cv(v)) for k, v in globals_items), tuple(nodes))
 
     def _arr_label(self, at: str, length) -> str:
@@ -432,19 +444,21 @@ class Interpreter:
         globals_items, nodes = canon
         objects = []
         for i, node in enumerate(nodes, 1):
-            if len(node) == 2:                # an object
-                t, fields = node
+            if len(node) == 3:                # an object
+                t, owner, fields = node
                 objects.append({"id": f"#{i}", "class": t,
+                                "allocated_by": owner,
                                 "fields": {f: self._fmt_value(v)
                                            for f, v in fields}})
             else:                             # an array
-                t, (_lenlbl, n), elems = node
+                t, owner, (_lenlbl, n), elems = node
                 fields = {str(j): self._fmt_value(v)
                           for j, v in enumerate(elems[:16])}
                 if n > 16:
                     fields["…"] = f"({n - 16} more)"
                 objects.append({"id": f"#{i}",
                                 "class": self._arr_label(t, n),
+                                "allocated_by": owner,
                                 "fields": fields})
         return {"globals": {k: self._fmt_value(v) for k, v in globals_items},
                 "objects": objects}
@@ -527,9 +541,10 @@ class Interpreter:
                 out["threads"].setdefault(str(tid), {})[name] = fmt(v)
         for ref, i in idmap.items():
             _tag, t, a = ref
+            owner = items.get(("owner", t, a))
             if t in self.classes:
                 out["objects"].append({
-                    "id": f"#{i}", "class": t,
+                    "id": f"#{i}", "class": t, "allocated_by": owner,
                     "fields": {f: fmt(items.get(("fld", t, a, f), 0))
                                for f in self._class_fields(t)}})
             else:
@@ -538,9 +553,8 @@ class Interpreter:
                           for j in range(min(n, 16))}
                 if n > 16:
                     fields["…"] = f"({n - 16} more)"
-                out["objects"].append({"id": f"#{i}",
-                                       "class": self._arr_label(t, n),
-                                       "fields": fields})
+                out["objects"].append({"id": f"#{i}", "class": self._arr_label(t, n),
+                                       "allocated_by": owner, "fields": fields})
         out["globals"] = dict(sorted(out["globals"].items()))
         for t in out["threads"]:
             out["threads"][t] = dict(sorted(out["threads"][t].items()))
@@ -598,7 +612,7 @@ class Interpreter:
         if isinstance(head, A.Assign):
             s2 = dict(store)
             if isinstance(head.rhs, A.New):
-                val = self._allocate(head.rhs.cls, s2)
+                val = self._allocate(head.rhs.cls, s2, tid)
             elif isinstance(head.rhs, A.NewArray):
                 cls = head.rhs
                 size = self._eval(cls.size, store, dict(ts.old_snapshot), tid)
@@ -607,6 +621,7 @@ class Interpreter:
                 at = self.ti.expr_class[id(head.rhs)]   # nominal array type
                 addr = s2.get(("next", at), 1)
                 s2[("next", at)] = addr + 1
+                s2[("owner", at, addr)] = tid           # allocating thread
                 s2[("len", at, addr)] = size
                 val = ("ref", at, addr)
             else:
@@ -715,9 +730,10 @@ class Interpreter:
                                  ts.old_snapshot), s2, False)]
         raise InterpError(f"cannot step {type(head).__name__}")
 
-    def _allocate(self, cls: str, store: Dict):
+    def _allocate(self, cls: str, store: Dict, tid: int):
         addr = store.get(("next", cls), 1)
         store[("next", cls)] = addr + 1
+        store[("owner", cls, addr)] = tid          # allocating thread
         cdecl = self.classes[cls]
         for fld in cdecl.fields:
             store[("fld", cls, addr, fld.name)] = self._field_default(cls, fld)
@@ -843,7 +859,9 @@ def main(argv=None) -> int:
             parts = [f"{k} = {v}" for k, v in st["globals"].items()]
             for obj in st.get("objects", []):
                 fields = ", ".join(f"{f}: {v}" for f, v in obj["fields"].items())
-                parts.append(f"{obj['id']}: {obj['class']}{{{fields}}}")
+                owner = obj.get("allocated_by")
+                by = f" (allocated by t{owner})" if owner is not None else ""
+                parts.append(f"{obj['id']}: {obj['class']}{{{fields}}}{by}")
             print("  " + (", ".join(parts) if parts else "(empty store)"))
 
     return 1 if result.wrong_reachable else (3 if result.hit_bound else 0)
