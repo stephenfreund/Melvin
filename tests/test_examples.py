@@ -21,6 +21,7 @@ VERIFYING = [
     "assert_pass.mml",
     "nonatomic_two_yields.mml",
     "atomic_calls_atomic.mml",
+    "obj_counter.mml",
 ]
 
 # Programs that must be rejected, with a substring expected in some diagnostic.
@@ -31,6 +32,7 @@ REJECTED = {
     "both_mover_loop.mml": "terminate",
     "rely_not_transitive.mml": "not transitive",
     "rely_not_reflexive.mml": "not reflexive",
+    "obj_racy_bad.mml": "race",
 }
 
 

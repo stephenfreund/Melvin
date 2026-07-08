@@ -1,0 +1,22 @@
+// REJECTED: a method that writes a lock-guarded field without holding the
+// per-object lock.  The write's mover specification evaluates to E (error):
+// a data race.
+
+class Cell {
+  var int v   both-mover if this.m == tid;
+
+  lock m  write right-mover if \old(this.m) == 0 && this.m == tid
+          write left-mover  if \old(this.m) == tid && this.m == 0;
+
+  atomic
+  requires true
+  ensures  true
+  bad(int n) {
+    this.v = n;        // ERROR: this.m != tid here, so the write races
+  }
+}
+
+thread {
+  c = new Cell;
+  c.bad(1);
+}

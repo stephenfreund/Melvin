@@ -1,0 +1,43 @@
+// Object counter: the counter example from counter.mml, packaged as a class.
+//
+// Each Counter object carries its own lock field m guarding its field x, with
+// the mover specification instantiated at `this`.  The client allocates a
+// fresh counter (fields start at their defaults, so x == 0), and the atomic
+// method add() is verified once and reused for every object.
+
+class Counter {
+  var int x   both-mover if this.m == tid;
+
+  // Per-object mutex: acquire (0 -> tid) is a right-mover, release
+  // (tid -> 0) a left-mover, and the holder may read it.
+  lock m  write right-mover if \old(this.m) == 0 && this.m == tid
+          write left-mover  if \old(this.m) == tid && this.m == 0
+          read  both-mover  if this.m == tid;
+
+  atomic
+  requires true
+  ensures  this.x == \old(this.x) + n && result == this.x && this.m == \old(this.m)
+  add(int n) {
+    acquire(this.m);
+    t = this.x;
+    t = t + n;
+    this.x = t;
+    result = t;
+    release(this.m);
+  }
+}
+
+relies     true
+guarantees true
+requires   true
+ensures    true
+main() {
+  yield;
+  c = new Counter;      // fresh object: c.x == 0, c.m == 0
+  r = c.add(2);
+  assert r == 2;
+  yield;
+}
+
+thread { main(); }
+thread { main(); }

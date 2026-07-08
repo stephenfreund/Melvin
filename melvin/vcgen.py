@@ -14,6 +14,14 @@ Store model (inside one procedure, verifying one arbitrary thread `tid`):
   * `ce_<g>`  -- snapshot at a call site (what `\\old` denotes in a callee's Q)
   * `eff`     -- ghost int tracking the running effect (see prelude codes)
 
+The heap: each class C contributes shared store items alongside the scalar
+globals -- one Boogie map per field (`f_<C>_<fld>: [C]T`) and an allocation
+set (`alloc_<C>: [C]bool`).  Because a whole map is just another store item
+(Boogie permits map-typed variables and whole-map assignment), all snapshot
+machinery above applies unchanged; a field access `e.f` translates to
+`f_<C>_<fld>[e]` against the appropriate snapshot.  Field mover clauses are
+evaluated with `this` bound to the receiver of the access.
+
 The running effect `eff` is composed with the *exact*, state-sensitive mover of
 each action (an `if/else` over the spec clauses), and `assert eff != E` after
 every action enforces reducibility (R*[N]L* separated by yields).
@@ -28,9 +36,47 @@ from .boogie_backend import Emitter
 from .diagnostics import Span, TypeError_
 from .effects import Effect, join_all, seq, star, leq
 from .prelude import prelude, EFF_CODE, E_CODE, R_CODE, L_CODE, Y_CODE, B_CODE, N_CODE
-from .types import TypeInfo
+from .types import TypeInfo, type_to_boogie
+
+
+def _unwrap_not(c: A.Cond) -> A.Cond:
+    while isinstance(c, A.NotCond):
+        c = c.inner
+    return c
 
 BUILTIN_FUNCS = {"head", "tail", "Some", "even", "isNone", "theVal"}
+
+
+def fmap_name(cls: str, fld: str) -> str:
+    """Boogie name of the per-field heap map of class `cls`."""
+    return f"f_{cls}_{fld}"
+
+
+def alloc_name(cls: str) -> str:
+    """Boogie name of the allocation set of class `cls`."""
+    return f"alloc_{cls}"
+
+
+def null_name(cls: str) -> str:
+    return f"null_{cls}"
+
+
+def default_value(boogie_type: str) -> Optional[str]:
+    """Default a freshly allocated field of this type starts with (None if the
+    type has no canonical default; the field then starts unconstrained)."""
+    if boogie_type == "int":
+        return "0"
+    if boogie_type == "bool":
+        return "false"
+    if boogie_type == "List":
+        return "Nil"
+    if boogie_type == "Optional":
+        return "None"
+    if boogie_type.startswith("["):      # array-typed fields: no default
+        return None
+    if boogie_type in ("Value",):
+        return None
+    return null_name(boogie_type)        # a class reference
 
 
 class Translator:
@@ -50,6 +96,14 @@ class Translator:
             return "Nil"
         if t is A.NoneLit:
             return "None"
+        if t is A.NullLit:
+            return null_name(self.ti.expr_class[id(e)])
+        if t is A.FieldAccess:
+            cls = self.ti.expr_class[id(e)]
+            m = fmap_name(cls, e.field)
+            if m not in cur:
+                raise TypeError_(f"field {e.field!r} is not accessible here", e.span)
+            return f"{cur[m]}[{self.tr(e.base, cur, old)}]"
         if t is A.Tid:
             return cur.get("tid", "tid")
         if t is A.Result:
@@ -76,9 +130,13 @@ class Translator:
             v = e.var
             cur2 = dict(cur); cur2[v] = v
             old2 = dict(old); old2[v] = v
+            body = self.tr(e.body, cur2, old2)
+            if e.cls is not None:
+                if e.kind == "forall":
+                    return f"(forall {v}: {e.cls} :: ({body}))"
+                return f"(exists {v}: {e.cls} :: ({body}))"
             lo = self.tr(e.lo, cur, old)
             hi = self.tr(e.hi, cur, old)
-            body = self.tr(e.body, cur2, old2)
             if e.kind == "forall":
                 return f"(forall {v}: int :: ({lo} <= {v} && {v} < {hi}) ==> ({body}))"
             return f"(exists {v}: int :: ({lo} <= {v} && {v} < {hi}) && ({body}))"
@@ -111,11 +169,24 @@ class Lowerer:
         self.ti = ti
         self.tr = Translator(ti)
         self.em = Emitter()
+        # Heap store items: one map per field plus an allocation set per class.
+        self.heap_types: Dict[str, str] = {}   # item name -> boogie type
+        for cname, fields in ti.classes.items():
+            self.heap_types[alloc_name(cname)] = f"[{cname}]bool"
+            for fld, ft in fields.items():
+                self.heap_types[fmap_name(cname, fld)] = f"[{cname}]{ft}"
+        # Per-call-site spec-substitution temps, filled by _scan_temps.
+        self.call_binds: Dict[int, Dict[str, Tuple[str, str]]] = {}
 
     # ------------------------------------------------------------------ util
+    def shared_list(self) -> List[str]:
+        """All shared store items: scalar globals plus heap maps/alloc sets."""
+        return list(self.ti.globals.keys()) + sorted(self.heap_types.keys())
+
     def store_items(self, scope: str) -> List[str]:
-        """All store variables visible in a scope: globals + that scope's locals + result."""
-        items = list(self.ti.globals.keys())
+        """All store variables visible in a scope: shared items + that scope's
+        locals + result."""
+        items = self.shared_list()
         locs = self.ti.scope_locals(scope)
         for l in locs:
             items.append(l)
@@ -126,6 +197,8 @@ class Lowerer:
     def btype(self, name: str, scope: str) -> str:
         if name in self.ti.globals:
             return self.ti.globals[name]
+        if name in self.heap_types:
+            return self.heap_types[name]
         locs = self.ti.scope_locals(scope)
         if name in locs:
             return locs[name]
@@ -145,7 +218,7 @@ class Lowerer:
         m["tid"] = "tid"
         return m
 
-    def declare_vars(self, scope: str) -> None:
+    def declare_vars(self, scope: str, temps: Optional[List[Tuple[str, str]]] = None) -> None:
         items = self.store_items(scope)
         for n in items:
             bt = self.btype(n, scope)
@@ -155,12 +228,14 @@ class Lowerer:
         self.em.line("var eff: int;")
         self.em.line("var mv: int;")
         self.em.line("var le_save: int;")
+        for name, bt in (temps or []):
+            self.em.line(f"var {name}: {bt};")
 
     def globals_list(self) -> List[str]:
-        return list(self.ti.globals.keys())
+        return self.shared_list()
 
     def snapshot(self, snap: str, scope: str, only_globals: bool = False) -> None:
-        items = self.globals_list() if only_globals else self.store_items(scope)
+        items = self.shared_list() if only_globals else self.store_items(scope)
         for n in items:
             self.em.line(f"{snap}_{n} := v_{n};")
 
@@ -221,6 +296,118 @@ class Lowerer:
             f"is not of the form R*[N]L* (insert a yield to split it)",
         )
 
+    # ---------------------------------------------------------- field movers
+    def _field_clauses(self, cls: str, fld: str, access: str) -> List[A.MoverClause]:
+        vd = self.prog.find_field(cls, fld)
+        if vd is None:
+            return []
+        out = []
+        for cl in vd.clauses:
+            if cl.index is not None:
+                continue
+            if cl.access is None or cl.access == access:
+                out.append(cl)
+        return out
+
+    def _field_mover_static(self, cls: str, fld: str, access: str) -> Effect:
+        return join_all(cl.mover for cl in self._field_clauses(cls, fld, access))
+
+    def _field_mover_expr(self, cls: str, fld: str, access: str, scope: str,
+                          recv: str) -> str:
+        """Mover selection for an access to `recv`.`fld`: the clause guards are
+        evaluated with `this` bound to the (pre-captured) receiver, bare field
+        names against the post-action heap, and `\\old` against the pre-action
+        `pre_` snapshot."""
+        clauses = self._field_clauses(cls, fld, access)
+        cur = self.cur_map(scope); cur["this"] = recv
+        old = self.snap_map(scope, "pre"); old["this"] = recv
+        return self._mover_ite(clauses, cur, old)
+
+    def _emit_field_mover(self, cls: str, fld: str, access: str, scope: str,
+                          recv: str, span: Span, what: str) -> None:
+        self.em.line(f"mv := {self._field_mover_expr(cls, fld, access, scope, recv)};")
+        self.em.assert_(
+            f"mv != {E_CODE}", span,
+            f"{what} of field {fld!r} is not permitted here by its mover "
+            f"specification (possible data race)",
+        )
+        self.em.line("eff := seqEff(eff, mv);")
+        self.em.assert_(
+            f"eff != {E_CODE}", span,
+            f"{what} of field {fld!r} breaks reducibility here: this reducible "
+            f"sequence is not of the form R*[N]L* (insert a yield to split it)",
+        )
+
+    def _capture_recv(self, base: A.Expr, cls: str, scope: str, span: Span,
+                      what: str) -> str:
+        """Copy the receiver into its per-class temp and check it non-null."""
+        cur = self.cur_map(scope)
+        recv = f"recv_{cls}"
+        self.em.line(f"{recv} := {self.tr.tr(base, cur, cur)};")
+        self.em.assert_(f"{recv} != {null_name(cls)}", span,
+                        f"the receiver of this {what} may be null")
+        return recv
+
+    # ------------------------------------------------------------ temp scan
+    def _scan_temps(self, body: List[A.Stmt], scope: str) -> List[Tuple[str, str]]:
+        """Collect the auxiliary locals a procedure body needs: per-class
+        receiver and allocation temps, and per-call-site spec-substitution
+        temps for method receivers and arguments."""
+        decls: Dict[str, str] = {}
+        counter = [0]
+
+        def field_kind_cls(kind_val: str) -> str:
+            return kind_val.split(".", 1)[0]
+
+        def scan_cond(c: A.Cond) -> None:
+            c = _unwrap_not(c)
+            if isinstance(c, A.CasCond) and c.target_expr is not None:
+                cls = self.ti.expr_class[id(c.target_expr)]
+                decls[f"recv_{cls}"] = cls
+
+        def scan(stmts: List[A.Stmt]) -> None:
+            for st in stmts:
+                if isinstance(st, A.Assign):
+                    kind, gv = self.ti.assign_kind[id(st)]
+                    if kind == "fieldread":
+                        cls = field_kind_cls(gv)
+                        decls[f"recv_{cls}"] = cls
+                    elif kind == "new":
+                        decls[f"newref_{gv}"] = gv
+                elif isinstance(st, A.FieldWrite):
+                    kind, gv = self.ti.assign_kind[id(st)]
+                    cls = field_kind_cls(gv)
+                    decls[f"recv_{cls}"] = cls
+                elif isinstance(st, A.UnstableRead) and st.source_expr is not None:
+                    cls = self.ti.expr_class[id(st.source_expr)]
+                    decls[f"recv_{cls}"] = cls
+                elif isinstance(st, (A.Acquire, A.Release)) and st.lock_expr is not None:
+                    cls = self.ti.expr_class[id(st.lock_expr)]
+                    decls[f"recv_{cls}"] = cls
+                elif isinstance(st, A.Call_):
+                    target = self.ti.call_target.get(id(st), st.name)
+                    callee = self.prog.find_func(target)
+                    if callee is None:
+                        continue
+                    k = counter[0]; counter[0] += 1
+                    binds: Dict[str, Tuple[str, str]] = {}
+                    if st.receiver is not None:
+                        binds["this"] = (f"cs{k}_this", callee.cls)
+                    for i, p in enumerate(callee.params):
+                        binds[p.name] = (f"cs{k}_a{i}", type_to_boogie(p.type))
+                    for name, bt in binds.values():
+                        decls[name] = bt
+                    self.call_binds[id(st)] = binds
+                elif isinstance(st, A.If):
+                    scan_cond(st.cond)
+                    scan(st.then_body); scan(st.else_body)
+                elif isinstance(st, A.While):
+                    scan_cond(st.cond)
+                    scan(st.body)
+
+        scan(body)
+        return sorted(decls.items())
+
     # -------------------------------------------------------------- programs
     def lower(self) -> Emitter:
         for f in self.prog.funcs:
@@ -232,8 +419,13 @@ class Lowerer:
         self.gen_state_checks()
         self.gen_rely_checks()
 
-        # Prepend the prelude plus any uninterpreted-function declarations.
+        # Prepend the prelude, per-class type declarations, and any
+        # uninterpreted-function declarations.
         header = [prelude()]
+        for c in self.prog.classes:
+            header.append(f"// class {c.name}")
+            header.append(f"type {c.name};")
+            header.append(f"const unique {null_name(c.name)}: {c.name};")
         for name, arity in sorted(self.tr.unknown_funcs.items()):
             sig = ", ".join(["int"] * arity)
             header.append(f"function {name}({sig}) returns (bool);")
@@ -256,8 +448,9 @@ class Lowerer:
         self.em.line(f"procedure {{:entrypoint}} Def_{f.name}()")
         self.em.line("{")
         self.em.indent()
-        self.declare_vars(scope)
+        self.declare_vars(scope, self._scan_temps(f.body, scope))
         self.em.line("assume tid > 0;")
+        self._assume_receiver(f, scope)
         self.snapshot("o", scope)          # \old == entry store
         cur = self.cur_map(scope)
         self.em.line(f"assume {self.tr.tr(spec.requires, cur, self.snap_map(scope, 'o'))};")
@@ -286,8 +479,9 @@ class Lowerer:
         self.em.line(f"procedure {{:entrypoint}} Def_{f.name}()")
         self.em.line("{")
         self.em.indent()
-        self.declare_vars(scope)
+        self.declare_vars(scope, self._scan_temps(f.body, scope))
         self.em.line("assume tid > 0;")
+        self._assume_receiver(f, scope)
         self.snapshot("o", scope)
         cur = self.cur_map(scope)
         self.em.line(f"assume {self.tr.tr(spec.requires, cur, self.snap_map(scope, 'o'))};")
@@ -307,6 +501,18 @@ class Lowerer:
         )
         self.em.dedent()
         self.em.line("}")
+
+    def _assume_receiver(self, f: A.FnDecl, scope: str) -> None:
+        """A method runs on an allocated, non-null receiver; ref-typed
+        parameters are null or allocated."""
+        if f.cls is not None:
+            self.em.line(f"assume v_this != {null_name(f.cls)} && "
+                         f"v_{alloc_name(f.cls)}[v_this];")
+        for p in f.params:
+            pt = type_to_boogie(p.type)
+            if pt in self.ti.classes:
+                self.em.line(f"assume v_{p.name} == {null_name(pt)} || "
+                             f"v_{alloc_name(pt)}[v_{p.name}];")
 
     # ------------------------------------------------------------ statements
     def emit_block(self, body: List[A.Stmt], ctx: "_Ctx") -> None:
@@ -339,7 +545,14 @@ class Lowerer:
         if isinstance(s, A.Assign):
             self.emit_assign(s, ctx)
             return
+        if isinstance(s, A.FieldWrite):
+            self.emit_field_write(s, ctx)
+            return
         if isinstance(s, A.UnstableRead):
+            if s.source_expr is not None:
+                cls = self.ti.expr_class[id(s.source_expr)]
+                self._capture_recv(s.source_expr.base, cls, scope, s.span,
+                                   "unstable read")
             self.snapshot("pre", scope, only_globals=True)
             self.em.line(f"havoc v_{s.lhs};")
             self.em.line(f"eff := seqEff(eff, {R_CODE});")  # unstable read is a right-mover
@@ -369,11 +582,47 @@ class Lowerer:
             self.snapshot("pre", scope, only_globals=True)
             self._emit_mover(gvar, "read", scope, s.span, "read")
             self.em.line(f"v_{s.lhs} := v_{gvar};")
+        elif kind == "fieldread":
+            cls, fld = gvar.split(".", 1)
+            recv = self._capture_recv(s.rhs.base, cls, scope, s.span, "field read")
+            self.snapshot("pre", scope, only_globals=True)
+            self._emit_field_mover(cls, fld, "read", scope, recv, s.span, "read")
+            self.em.line(f"v_{s.lhs} := v_{fmap_name(cls, fld)}[{recv}];")
+        elif kind == "new":
+            self.emit_new(s, gvar, ctx)
         else:  # local computation: both-mover, no effect change
             self.em.line(f"v_{s.lhs} := {self.tr.tr(s.rhs, cur, cur)};")
 
+    def emit_new(self, s: A.Assign, cls: str, ctx: "_Ctx") -> None:
+        """`x = new C`: pick an unallocated non-null reference, mark it
+        allocated, and reset its fields to their type defaults.  Allocation is
+        invisible to other threads (the fresh reference is unreachable), so it
+        is a both-mover with no spec check."""
+        ref = f"newref_{cls}"
+        am = alloc_name(cls)
+        self.em.line(f"havoc {ref};")
+        self.em.line(f"assume {ref} != {null_name(cls)} && !v_{am}[{ref}];")
+        self.em.line(f"v_{am} := v_{am}[{ref} := true];")
+        for fld, ft in self.ti.classes[cls].items():
+            d = default_value(ft)
+            if d is not None:
+                fm = fmap_name(cls, fld)
+                self.em.line(f"v_{fm} := v_{fm}[{ref} := {d}];")
+            # types without a canonical default start unconstrained: the map
+            # value at a never-allocated index was never pinned by anyone
+        self.em.line(f"v_{s.lhs} := {ref};")
+
     def emit_acquire(self, s: A.Acquire, ctx: "_Ctx") -> None:
         scope = ctx.scope
+        if s.lock_expr is not None:
+            cls = self.ti.expr_class[id(s.lock_expr)]
+            recv = self._capture_recv(s.lock_expr.base, cls, scope, s.span, "acquire")
+            fm = fmap_name(cls, s.lock)
+            self.snapshot("pre", scope, only_globals=True)
+            self.em.line(f"assume pre_{fm}[{recv}] == 0;")
+            self.em.line(f"v_{fm} := v_{fm}[{recv} := tid];")
+            self._emit_field_mover(cls, s.lock, "write", scope, recv, s.span, "acquire")
+            return
         self.snapshot("pre", scope, only_globals=True)
         # acquire blocks unless the lock is free (guard: \old(m) == 0)
         self.em.line(f"assume pre_{s.lock} == 0;")
@@ -382,9 +631,28 @@ class Lowerer:
 
     def emit_release(self, s: A.Release, ctx: "_Ctx") -> None:
         scope = ctx.scope
+        if s.lock_expr is not None:
+            cls = self.ti.expr_class[id(s.lock_expr)]
+            recv = self._capture_recv(s.lock_expr.base, cls, scope, s.span, "release")
+            fm = fmap_name(cls, s.lock)
+            self.snapshot("pre", scope, only_globals=True)
+            self.em.line(f"v_{fm} := v_{fm}[{recv} := 0];")
+            self._emit_field_mover(cls, s.lock, "write", scope, recv, s.span, "release")
+            return
         self.snapshot("pre", scope, only_globals=True)
         self.em.line(f"v_{s.lock} := 0;")
         self._emit_mover(s.lock, "write", scope, s.span, "release")
+
+    def emit_field_write(self, s: A.FieldWrite, ctx: "_Ctx") -> None:
+        scope = ctx.scope
+        cur = self.cur_map(scope)
+        kind, gvar = self.ti.assign_kind[id(s)]
+        cls, fld = gvar.split(".", 1)
+        recv = self._capture_recv(s.base, cls, scope, s.span, "field write")
+        fm = fmap_name(cls, fld)
+        self.snapshot("pre", scope, only_globals=True)
+        self.em.line(f"v_{fm} := v_{fm}[{recv} := {self.tr.tr(s.rhs, cur, cur)}];")
+        self._emit_field_mover(cls, fld, "write", scope, recv, s.span, "write")
 
     def emit_yield(self, s: A.Yield, ctx: "_Ctx") -> None:
         scope = ctx.scope
@@ -400,17 +668,29 @@ class Lowerer:
             s.span, "the guarantee G may be violated by the reducible sequence "
                     "before this yield",
         )
-        # interference: havoc globals and assume the rely once; this models R*
-        # because gen_rely_checks proves R reflexive and transitive
+        # interference: havoc shared state and assume the rely once; this
+        # models R* because gen_rely_checks proves R reflexive and transitive
         self.snapshot("py", scope, only_globals=True)
-        for g in self.globals_list():
+        for g in self.shared_list():
             self.em.line(f"havoc v_{g};")
+        for conj in self._builtin_rely("v", "py"):
+            self.em.line(f"assume {conj};")
         self.em.line(
             f"assume {self.tr.tr(ctx.relies, cur, self.snap_map(scope, 'py'))};"
         )
         # start a new reducible sequence
         self.restore_seq_start(scope)
         self.em.line(f"eff := seqEff(eff, {Y_CODE});")
+
+    def _builtin_rely(self, cur_snap: str, old_snap: str) -> List[str]:
+        """Interference facts guaranteed by the semantics itself (not by user
+        relies): other threads only ever allocate, so allocation sets grow."""
+        out = []
+        for cname in self.ti.classes:
+            am = alloc_name(cname)
+            out.append(f"(forall _o: {cname} :: {old_snap}_{am}[_o] ==> "
+                       f"{cur_snap}_{am}[_o])")
+        return out
 
     def emit_if(self, s: A.If, ctx: "_Ctx") -> None:
         scope = ctx.scope
@@ -479,6 +759,16 @@ class Lowerer:
             self.em.line(f"assume {self.tr.tr(c.expr, cur, cur)};")
             return
         if isinstance(c, A.CasCond):
+            if c.target_expr is not None:
+                cls = self.ti.expr_class[id(c.target_expr)]
+                recv = self._capture_recv(c.target_expr.base, cls, scope, c.span, "cas")
+                fm = fmap_name(cls, c.target)
+                self.snapshot("pre", scope, only_globals=True)
+                self.em.line(f"assume pre_{fm}[{recv}] == {self.tr.tr(c.expected, cur, cur)};")
+                self.em.line(f"v_{fm} := v_{fm}[{recv} := {self.tr.tr(c.new, cur, cur)}];")
+                self._emit_field_mover(cls, c.target, "write", scope, recv, c.span,
+                                       "successful cas")
+                return
             self.snapshot("pre", scope, only_globals=True)
             self.em.line(f"assume pre_{c.target} == {self.tr.tr(c.expected, cur, cur)};")
             self.em.line(f"v_{c.target} := {self.tr.tr(c.new, cur, cur)};")
@@ -516,6 +806,9 @@ class Lowerer:
         if isinstance(c, A.BoolCond):
             return Effect.B
         if isinstance(c, A.CasCond):
+            if c.target_expr is not None:
+                cls = self.ti.expr_class[id(c.target_expr)]
+                return self._field_mover_static(cls, c.target, "write")
             return self._mover_static(c.target, "write")
         return Effect.B
 
@@ -535,13 +828,23 @@ class Lowerer:
         if isinstance(s, A.UnstableRead):
             return Effect.R
         if isinstance(s, A.Acquire) or isinstance(s, A.Release):
+            if s.lock_expr is not None:
+                cls = self.ti.expr_class[id(s.lock_expr)]
+                return self._field_mover_static(cls, s.lock, "write")
             return self._mover_static(s.lock, "write")
+        if isinstance(s, A.FieldWrite):
+            kind, gvar = self.ti.assign_kind[id(s)]
+            cls, fld = gvar.split(".", 1)
+            return self._field_mover_static(cls, fld, "write")
         if isinstance(s, A.Assign):
             kind, gvar = self.ti.assign_kind[id(s)]
             if kind == "write":
                 return self._mover_static(s.lhs, "write")
             if kind == "read":
                 return self._mover_static(gvar, "read")
+            if kind == "fieldread":
+                cls, fld = gvar.split(".", 1)
+                return self._field_mover_static(cls, fld, "read")
             return Effect.B
         if isinstance(s, A.If):
             a1 = self._cond_success_static(s.cond)
@@ -558,107 +861,142 @@ class Lowerer:
             it = self._loop_iter_static(s, ctx)
             return seq(star(it), self._cond_fail_static(s.cond))
         if isinstance(s, A.Call_):
-            callee = self.prog.find_func(s.name)
+            callee = self.prog.find_func(self.ti.call_target.get(id(s), s.name))
             if callee is not None and callee.is_atomic:
                 return callee.spec.mover
             return Effect.R
         return Effect.B
 
+    def _shared_writes(self, stmts: List[A.Stmt], mods: Set[str],
+                       seen_fns: Set[str]) -> None:
+        """Collect the shared store items (globals, field maps, alloc sets)
+        that `stmts` may write, following calls transitively."""
+
+        def cas_target(c: A.Cond) -> None:
+            c = _unwrap_not(c)
+            if isinstance(c, A.CasCond):
+                if c.target_expr is not None:
+                    cls = self.ti.expr_class[id(c.target_expr)]
+                    mods.add(fmap_name(cls, c.target))
+                else:
+                    mods.add(c.target)
+
+        for st in stmts:
+            if isinstance(st, A.Assign):
+                kind, gvar = self.ti.assign_kind[id(st)]
+                if kind == "write":
+                    mods.add(st.lhs)
+                elif kind == "new":
+                    mods.add(alloc_name(gvar))
+                    for fld in self.ti.classes[gvar]:
+                        mods.add(fmap_name(gvar, fld))
+            elif isinstance(st, A.FieldWrite):
+                kind, gvar = self.ti.assign_kind[id(st)]
+                cls, fld = gvar.split(".", 1)
+                mods.add(fmap_name(cls, fld))
+            elif isinstance(st, (A.Acquire, A.Release)):
+                if st.lock_expr is not None:
+                    cls = self.ti.expr_class[id(st.lock_expr)]
+                    mods.add(fmap_name(cls, st.lock))
+                else:
+                    mods.add(st.lock)
+            elif isinstance(st, A.If):
+                cas_target(st.cond)
+                self._shared_writes(st.then_body, mods, seen_fns)
+                self._shared_writes(st.else_body, mods, seen_fns)
+            elif isinstance(st, A.While):
+                cas_target(st.cond)
+                self._shared_writes(st.body, mods, seen_fns)
+            elif isinstance(st, A.Call_):
+                target = self.ti.call_target.get(id(st), st.name)
+                if target not in seen_fns:
+                    seen_fns.add(target)
+                    callee = self.prog.find_func(target)
+                    if callee is not None:
+                        self._shared_writes(callee.body, mods, seen_fns)
+
     def _loop_modified(self, s: A.While, ctx: "_Ctx") -> List[str]:
         mods: Set[str] = set()
-
-        def scan(stmts: List[A.Stmt]):
-            for st in stmts:
-                if isinstance(st, A.Assign) and st.lhs in self.ti.globals:
-                    mods.add(st.lhs)
-                if isinstance(st, (A.Acquire, A.Release)):
-                    mods.add(st.lock)
-                if isinstance(st, A.If):
-                    if isinstance(st.cond, A.CasCond):
-                        mods.add(st.cond.target)
-                    scan(st.then_body); scan(st.else_body)
-                if isinstance(st, A.While):
-                    if isinstance(st.cond, A.CasCond):
-                        mods.add(st.cond.target)
-                    scan(st.body)
-                if isinstance(st, A.Call_):
-                    mods.update(self.ti.globals.keys())
-        if isinstance(s.cond, A.CasCond):
-            mods.add(s.cond.target)
-        if isinstance(s.cond, A.NotCond) and isinstance(s.cond.inner, A.CasCond):
-            mods.add(s.cond.inner.target)
-        scan(s.body)
-        return [g for g in self.globals_list() if g in mods]
+        c = _unwrap_not(s.cond)
+        if isinstance(c, A.CasCond):
+            if c.target_expr is not None:
+                mods.add(fmap_name(self.ti.expr_class[id(c.target_expr)], c.target))
+            else:
+                mods.add(c.target)
+        self._shared_writes(s.body, mods, set())
+        return [g for g in self.shared_list() if g in mods]
 
     # -------------------------------------------------------- function calls
     def emit_call(self, s: A.Call_, ctx: "_Ctx") -> None:
         scope = ctx.scope
         cur = self.cur_map(scope)
-        callee = self.prog.find_func(s.name)
+        target = self.ti.call_target.get(id(s), s.name)
+        callee = self.prog.find_func(target)
+        # Capture the receiver and argument values in temps: in the callee's
+        # spec, `this` and parameter names denote these call-entry values
+        # (parameters are immutable), so requires/ensures are translated with
+        # them substituted in.
+        binds = self.call_binds.get(id(s), {})
+        for name, (tmp, _bt) in binds.items():
+            if name == "this":
+                self.em.line(f"{tmp} := {self.tr.tr(s.receiver, cur, cur)};")
+                self.em.assert_(f"{tmp} != {null_name(callee.cls)}", s.span,
+                                "the receiver of this method call may be null")
+            else:
+                idx = [p.name for p in callee.params].index(name)
+                self.em.line(f"{tmp} := {self.tr.tr(s.args[idx], cur, cur)};")
+        sub = {name: tmp for name, (tmp, _bt) in binds.items()}
+        cur_b = {**cur, **sub}
         # snapshot call entry for the callee's \old
         self.snapshot("ce", scope)
         if callee.is_atomic:
             spec: A.AtomicSpec = callee.spec
             self.em.assert_(
-                self.tr.tr(spec.requires, cur, cur), s.span,
-                f"precondition of atomic {s.name}() may not hold at this call",
+                self.tr.tr(spec.requires, cur_b, cur_b), s.span,
+                f"precondition of atomic {target}() may not hold at this call",
             )
             self._havoc_callee_effects(callee, scope)
-            self.em.line(f"assume {self.tr.tr(spec.ensures, cur, self.snap_map(scope, 'ce'))};")
+            old_b = {**self.snap_map(scope, "ce"), **sub}
+            self.em.line(f"assume {self.tr.tr(spec.ensures, cur_b, old_b)};")
             self.em.line(f"eff := seqEff(eff, {EFF_CODE[spec.mover.name]});")
             self.em.assert_(f"eff != {E_CODE}", s.span,
-                            f"call to {s.name}() breaks reducibility here")
+                            f"call to {target}() breaks reducibility here")
         else:
             spec: A.NonAtomicSpec = callee.spec
             # M-call-non-atomic: current reducible sequence must be trivial (S holds)
             self.em.assert_(
-                self.tr.tr(spec.requires, cur, cur), s.span,
-                f"precondition of {s.name}() may not hold at this call",
+                self.tr.tr(spec.requires, cur_b, cur_b), s.span,
+                f"precondition of {target}() may not hold at this call",
             )
             self._havoc_callee_effects(callee, scope)
-            self.em.line(f"assume {self.tr.tr(spec.ensures, cur, cur)};")
+            self.em.line(f"assume {self.tr.tr(spec.ensures, cur_b, cur_b)};")
             self.restore_seq_start(scope)
             self.em.line(f"eff := seqEff(eff, {R_CODE});")
             self.em.assert_(f"eff != {E_CODE}", s.span,
-                            f"call to {s.name}() breaks reducibility here")
+                            f"call to {target}() breaks reducibility here")
+        if s.assign_to is not None and s.assign_to != "result":
+            self.em.line(f"v_{s.assign_to} := v_result;")
 
     def _havoc_callee_effects(self, callee: A.FnDecl, caller_scope: str) -> None:
-        # Havoc exactly the globals the callee writes and the locals it assigns.
-        # (Mover Logic omits frame conditions, so callee ensures must pin what
-        #  matters; we havoc writes and let the ensures constrain them.)
-        gwrites = self._callee_global_writes(callee)
-        for g in gwrites:
+        # Havoc exactly the shared items the callee writes (transitively,
+        # through nested calls) and the locals it assigns.  (Mover Logic omits
+        # frame conditions, so callee ensures must pin what matters; we havoc
+        # writes and let the ensures constrain them.)
+        for g in self._callee_shared_writes(callee):
             self.em.line(f"havoc v_{g};")
         caller_items = set(self.store_items(caller_scope))
+        param_names = {p.name for p in callee.params} | {"this"}
         for l in self._callee_local_writes(callee):
             # Only locals visible in the caller need havocking; the callee's
             # private working locals do not affect the caller's state.
-            if l in caller_items:
+            # Parameters are immutable, so they are never written.
+            if l in caller_items and l not in param_names:
                 self.em.line(f"havoc v_{l};")
 
-    def _callee_global_writes(self, callee: A.FnDecl) -> List[str]:
+    def _callee_shared_writes(self, callee: A.FnDecl) -> List[str]:
         out: Set[str] = set()
-
-        def scan(stmts):
-            for st in stmts:
-                if isinstance(st, A.Assign) and st.lhs in self.ti.globals:
-                    out.add(st.lhs)
-                if isinstance(st, (A.Acquire, A.Release)):
-                    out.add(st.lock)
-                if isinstance(st, A.If):
-                    if isinstance(st.cond, A.CasCond):
-                        out.add(st.cond.target)
-                    if isinstance(st.cond, A.NotCond) and isinstance(st.cond.inner, A.CasCond):
-                        out.add(st.cond.inner.target)
-                    scan(st.then_body); scan(st.else_body)
-                if isinstance(st, A.While):
-                    if isinstance(st.cond, A.CasCond):
-                        out.add(st.cond.target)
-                    if isinstance(st.cond, A.NotCond) and isinstance(st.cond.inner, A.CasCond):
-                        out.add(st.cond.inner.target)
-                    scan(st.body)
-        scan(callee.body)
-        return [g for g in self.globals_list() if g in out]
+        self._shared_writes(callee.body, out, {callee.name})
+        return [g for g in self.shared_list() if g in out]
 
     def _callee_local_writes(self, callee: A.FnDecl) -> List[str]:
         scope = f"fn:{callee.name}"
@@ -884,16 +1222,21 @@ class Lowerer:
             return self.prog.find_func(calls[0].name)
         return None
 
+    def shared_types(self) -> List[Tuple[str, str]]:
+        out = [(g, self.ti.globals[g]) for g in self.ti.globals]
+        out.extend(sorted(self.heap_types.items()))
+        return out
+
     def _reflexive_guarantee(self, f: A.FnDecl) -> None:
         spec: A.NonAtomicSpec = f.spec
-        gl = list(self.ti.globals.keys())
+        gl = self.shared_list()
         self.em.blank()
         self.em.line(f"// I => G for {f.name}()  (guarantee is reflexive)")
         self.em.line(f"procedure {{:entrypoint}} Reflexive_{f.name}()")
         self.em.line("{")
         self.em.indent()
-        for g in gl:
-            self.em.line(f"var v_{g}: {self.ti.globals[g]};")
+        for g, bt in self.shared_types():
+            self.em.line(f"var v_{g}: {bt};")
         self.em.line("var tid: int; assume tid > 0;")
         cur = {**{g: f"v_{g}" for g in gl}, "tid": "tid"}
         self.em.assert_(self.tr.tr(spec.guarantees, cur, cur), f.span,
@@ -904,14 +1247,14 @@ class Lowerer:
     def _guarantee_implies_rely(self, ft: A.FnDecl, fu: A.FnDecl) -> None:
         gspec: A.NonAtomicSpec = ft.spec
         rspec: A.NonAtomicSpec = fu.spec
-        gl = list(self.ti.globals.keys())
+        gl = self.shared_list()
         self.em.blank()
         self.em.line(f"// G[{ft.name}] => R[{fu.name}] for distinct threads")
         self.em.line(f"procedure {{:entrypoint}} GR_{ft.name}_{fu.name}()")
         self.em.line("{")
         self.em.indent()
-        for g in gl:
-            self.em.line(f"var v_{g}: {self.ti.globals[g]}; var o_{g}: {self.ti.globals[g]};")
+        for g, bt in self.shared_types():
+            self.em.line(f"var v_{g}: {bt}; var o_{g}: {bt};")
         self.em.line("var t: int; var u: int; assume t > 0 && u > 0 && t != u;")
         cur_t = {**{g: f"v_{g}" for g in gl}, "tid": "t"}
         old_t = {**{g: f"o_{g}" for g in gl}, "tid": "t"}
@@ -927,15 +1270,18 @@ class Lowerer:
         self.em.line("}")
 
     def _init_establishes(self, thread_fns: List[A.FnDecl]) -> None:
-        gl = list(self.ti.globals.keys())
+        gl = self.shared_list()
         self.em.blank()
         self.em.line("// initial store establishes each thread precondition (M-state)")
         self.em.line("procedure {:entrypoint} Init_establishes()")
         self.em.line("{")
         self.em.indent()
-        for g in gl:
-            self.em.line(f"var v_{g}: {self.ti.globals[g]};")
+        for g, bt in self.shared_types():
+            self.em.line(f"var v_{g}: {bt};")
         self.em.line("var tid: int; assume tid > 0;")
+        # the initial heap is empty: nothing is allocated yet
+        for cname in self.ti.classes:
+            self.em.line(f"assume (forall _o: {cname} :: !v_{alloc_name(cname)}[_o]);")
         cur = {**{g: f"v_{g}" for g in gl}, "tid": "tid"}
         self.em.line(f"assume {self.tr.tr(self.prog.init.pred, cur, cur)};")
         for f in thread_fns:
@@ -968,14 +1314,14 @@ class Lowerer:
 
     def _rely_reflexive(self, f: A.FnDecl) -> None:
         spec: A.NonAtomicSpec = f.spec
-        gl = list(self.ti.globals.keys())
+        gl = self.shared_list()
         self.em.blank()
         self.em.line(f"// R(s, s) for {f.name}()  (rely is reflexive)")
         self.em.line(f"procedure {{:entrypoint}} RelyRefl_{f.name}()")
         self.em.line("{")
         self.em.indent()
-        for g in gl:
-            self.em.line(f"var a_{g}: {self.ti.globals[g]};")
+        for g, bt in self.shared_types():
+            self.em.line(f"var a_{g}: {bt};")
         self.em.line("var tid: int; assume tid > 0;")
         s = {**{g: f"a_{g}" for g in gl}, "tid": "tid"}
         self.em.assert_(
@@ -988,19 +1334,22 @@ class Lowerer:
 
     def _rely_transitive(self, f: A.FnDecl) -> None:
         spec: A.NonAtomicSpec = f.spec
-        gl = list(self.ti.globals.keys())
+        gl = self.shared_list()
         self.em.blank()
         self.em.line(f"// R;R => R for {f.name}()  (rely is transitive)")
         self.em.line(f"procedure {{:entrypoint}} RelyTrans_{f.name}()")
         self.em.line("{")
         self.em.indent()
-        for g in gl:
-            t = self.ti.globals[g]
-            self.em.line(f"var a_{g}: {t}; var b_{g}: {t}; var c_{g}: {t};")
+        for g, bt in self.shared_types():
+            self.em.line(f"var a_{g}: {bt}; var b_{g}: {bt}; var c_{g}: {bt};")
         self.em.line("var tid: int; assume tid > 0;")
         sa = {**{g: f"a_{g}" for g in gl}, "tid": "tid"}
         sb = {**{g: f"b_{g}" for g in gl}, "tid": "tid"}
         sc = {**{g: f"c_{g}" for g in gl}, "tid": "tid"}
+        # interference steps also satisfy the built-in semantic facts
+        # (allocation is monotone), so they may be assumed as hypotheses
+        for conj in self._builtin_rely("b", "a") + self._builtin_rely("c", "b"):
+            self.em.line(f"assume {conj};")
         self.em.line(f"assume {self.tr.tr(spec.relies, sb, sa)};")
         self.em.line(f"assume {self.tr.tr(spec.relies, sc, sb)};")
         self.em.assert_(
