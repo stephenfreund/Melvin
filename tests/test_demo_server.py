@@ -174,3 +174,35 @@ def test_run_no_threads(client):
     body = res.json()
     assert body["status"] == "error"
     assert "thread" in body["diagnostics"][0]["message"]
+
+
+# ---------------------------------------- feature payloads (P4)
+
+def test_verify_movers_have_explanations(client):
+    res = client.post("/api/verify",
+                      json={"source": read_example("counter.mml")})
+    movers = res.json()["movers"]
+    assert movers and all("effect" in m and "line" in m for m in movers)
+    acq = [m for m in movers
+           if m.get("explain") and m["explain"]["action"].startswith("acquire")]
+    assert acq and "clauses" in acq[0]["explain"]
+    assert acq[0]["store"] is not None
+
+
+@needs_boogie
+def test_verify_counterexample_flag(client):
+    bad = read_example("counter.mml").replace(
+        "x == \\old(x) + n", "x == \\old(x) + 1")
+    res = client.post("/api/verify",
+                      json={"source": bad, "counterexample": True})
+    body = res.json()
+    assert body["status"] == "rejected"
+    assert any(d.get("model") for d in body["diagnostics"])
+
+
+def test_run_reports_finals(client):
+    res = client.post("/api/run", json={"source": read_example("oracle_safe.mml")})
+    body = res.json()
+    assert body["status"] == "safe"
+    assert body["finals"] == [{"globals": {"m": 0, "x": 4}, "objects": []}]
+    assert body["finals_complete"] is True

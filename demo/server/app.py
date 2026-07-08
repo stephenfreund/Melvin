@@ -35,7 +35,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from melvin.annotate import mover_annotations
+from melvin.annotate import line_details, mover_annotations
 from melvin.boogie_backend import BoogieBackend, BoogieError
 from melvin.checker import check_source
 from melvin.diagnostics import NO_SPAN, MelvinError
@@ -244,15 +244,15 @@ async def verify(req: SourceRequest, request: Request):
 
 
 def _movers_json(source: str) -> list:
-    """Per-line mover letters for the editor gutter ([] if the front end
-    fails — the verify diagnostics already report why)."""
+    """Per-line mover records for the editor gutter: the letter, an
+    explanation of why, and the schematic abstract store before the line
+    ([] if the front end fails — the verify diagnostics already report why)."""
     try:
         prog = parse(source, "input.mml")
         ti = check_types(prog)
+        return line_details(prog, ti, source)
     except MelvinError:
         return []
-    ann = mover_annotations(prog, ti)
-    return [{"line": line, "effect": eff} for line, eff in sorted(ann.items())]
 
 
 def _error_response(message: str) -> dict:
@@ -330,6 +330,7 @@ async def _run_interpreter(source: str) -> dict:
             "states": data.get("states"),
             "trace": data.get("trace"),
             "finals": data.get("finals"),
+            "finals_complete": data.get("finals_complete", True),
             "message": data.get("message", ""), "diagnostics": []}
 
 

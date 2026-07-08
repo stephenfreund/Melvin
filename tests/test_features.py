@@ -153,6 +153,58 @@ def test_no_finals_flag(capsys):
     assert "final store" not in out
 
 
+# -------------------------------- F2: explanations + schematic stores
+
+def test_line_details_explain_acquire():
+    from melvin.annotate import line_details
+    src = (EXAMPLES / "counter.mml").read_text()
+    prog = parse(src, "counter.mml")
+    ti = check_types(prog)
+    by_line = {d["line"]: d for d in line_details(prog, ti, src)}
+    acq = next(d for d in by_line.values()
+               if d["explain"] and d["explain"]["action"].startswith("acquire"))
+    assert acq["effect"] == "R"
+    assert "0 → tid" in acq["explain"]["transition"]
+    statuses = {c["status"] for c in acq["explain"]["clauses"]}
+    assert "matches" in statuses and "ruled out" in statuses
+
+
+def test_line_details_store_tracks_lock():
+    from melvin.annotate import line_details
+    src = (EXAMPLES / "counter.mml").read_text()
+    prog = parse(src, "counter.mml")
+    ti = check_types(prog)
+    by_line = {d["line"]: d for d in line_details(prog, ti, src)}
+    # inside add()'s critical section the lock is known held
+    lines = src.splitlines()
+    in_cs = [n for n, txt in enumerate(lines, 1) if "t = x" in txt][0]
+    assert by_line[in_cs]["store"]["m"] == "tid"
+    # a read under the held lock has its clause marked as matching
+    assert by_line[in_cs]["explain"]["clauses"][0]["status"] == "matches"
+
+
+def test_line_details_yield_drops_values_keeps_nothing_unheld():
+    from melvin.annotate import line_details
+    src = """
+var int x  non-mover;
+lock m  write right-mover if \\old(m) == 0 && m == tid
+        write left-mover  if \\old(m) == tid && m == 0;
+func f() {
+  yield;
+  x = 1;
+  yield;
+  x = 2;
+  yield;
+}
+thread { f(); }
+"""
+    prog = parse(src, "t.mml")
+    ti = check_types(prog)
+    by_line = {d["line"]: d for d in line_details(prog, ti, src)}
+    # before `x = 2` (line 9), the previous write of 1 was dropped at the yield
+    assert by_line[9]["store"]["x"] == "?"
+
+
 # --------------------------------------------- F4: Boogie counterexamples
 
 BAD_POST = """

@@ -73,13 +73,69 @@
     N: "non-mover", Y: "yield", E: "error (no mover applies)",
   };
 
+  var moverPopup = null;
+
+  function hideMoverPopup() {
+    if (moverPopup) { moverPopup.remove(); moverPopup = null; }
+  }
+
+  function showMoverPopup(chip, m) {
+    hideMoverPopup();
+    var pop = document.createElement("div");
+    pop.className = "mover-popup";
+    var head = document.createElement("div");
+    head.className = "mover-popup-head mover-" + m.effect;
+    head.textContent = m.effect + " — " + (MOVER_NAMES[m.effect] || m.effect);
+    pop.appendChild(head);
+    var ex = m.explain || {};
+    if (ex.action) {
+      var a = document.createElement("div");
+      a.className = "mover-popup-action";
+      a.textContent = ex.action + (ex.transition ? "   (" + ex.transition + ")" : "");
+      pop.appendChild(a);
+    }
+    if (ex.clauses && ex.clauses.length) {
+      var ul = document.createElement("ul");
+      ul.className = "mover-popup-clauses";
+      ex.clauses.forEach(function (c) {
+        var li = document.createElement("li");
+        li.className = "clause-" + c.status.replace(" ", "-");
+        li.textContent = c.text + "  — " + c.status;
+        ul.appendChild(li);
+      });
+      pop.appendChild(ul);
+    }
+    if (ex.note) {
+      var n = document.createElement("div");
+      n.className = "mover-popup-note";
+      n.textContent = ex.note;
+      pop.appendChild(n);
+    }
+    if (m.store && Object.keys(m.store).length) {
+      var lbl = document.createElement("div");
+      lbl.className = "mover-popup-storelabel";
+      lbl.textContent = "store here (approximate):";
+      pop.appendChild(lbl);
+      pop.appendChild(Snapshot.render({ globals: m.store, threads: {}, objects: m.heap || [] }));
+    }
+    document.body.appendChild(pop);
+    var r = chip.getBoundingClientRect();
+    pop.style.left = (r.right + 8) + "px";
+    var top = r.top;
+    if (top + pop.offsetHeight > window.innerHeight - 8)
+      top = Math.max(8, window.innerHeight - pop.offsetHeight - 8);
+    pop.style.top = top + "px";
+    moverPopup = pop;
+  }
+
   function annotateMovers(movers) {
     editor.clearGutter("melvin-movers");
     (movers || []).forEach(function (m) {
       var chip = document.createElement("div");
       chip.className = "mover-chip mover-" + m.effect;
       chip.textContent = m.effect;
-      chip.title = MOVER_NAMES[m.effect] || m.effect;
+      chip.addEventListener("mouseenter", function () { showMoverPopup(chip, m); });
+      chip.addEventListener("mouseleave", hideMoverPopup);
       editor.setGutterMarker(m.line - 1, "melvin-movers", chip);
     });
   }
@@ -277,7 +333,8 @@
     if (busy) return;
     startBusy("verifying");
     selectTab("output");
-    postJSON("api/verify", { source: editor.getValue() })
+    postJSON("api/verify", { source: editor.getValue(),
+                             counterexample: $("#opt-cex").checked })
       .then(renderVerify)
       .catch(function (err) {
         endBusy("bad", "error");
@@ -335,6 +392,24 @@
       msg.textContent = d.message;
       li.appendChild(loc);
       li.appendChild(msg);
+      if (d.model && d.model.length) {
+        var cex = document.createElement("div");
+        cex.className = "diag-cex";
+        var t = document.createElement("table");
+        d.model.forEach(function (row) {
+          var tr = document.createElement("tr");
+          var k = document.createElement("td"); k.className = "snap-k"; k.textContent = row[0];
+          var v = document.createElement("td"); v.className = "snap-v"; v.textContent = row[1];
+          tr.appendChild(k); tr.appendChild(v);
+          t.appendChild(tr);
+        });
+        var cap = document.createElement("div");
+        cap.className = "diag-cex-label";
+        cap.textContent = "counterexample store:";
+        cex.appendChild(cap);
+        cex.appendChild(t);
+        li.appendChild(cex);
+      }
       li.addEventListener("click", function () { jumpTo(d); });
       ul.appendChild(li);
     });
@@ -385,21 +460,42 @@
       out.appendChild(banner);
       if (res.trace) {
         var label = document.createElement("div");
-        label.textContent = "One such interleaving:";
+        label.textContent = "One such interleaving (click a step to see the store after it):";
         out.appendChild(label);
+        var wrap = document.createElement("div");
+        wrap.className = "trace-wrap";
         var ol = document.createElement("ol");
         ol.className = "trace-list";
+        var snapPane = document.createElement("div");
+        snapPane.className = "trace-snap";
+        var selected = null;
         res.trace.forEach(function (step) {
           var li = document.createElement("li");
           if (step && typeof step === "object") {
             li.textContent = "t" + step.tid + "  line " + step.line + ":  " + step.source;
-            li.dataset.line = step.line;
+            li.className = "trace-step";
+            li.addEventListener("click", function () {
+              if (selected) selected.classList.remove("selected");
+              selected = li;
+              li.classList.add("selected");
+              snapPane.innerHTML = "";
+              snapPane.appendChild(Snapshot.render(step.store || {},
+                { title: "after step: t" + step.tid + " line " + step.line }));
+              if (step.line) {
+                editor.setCursor({ line: step.line - 1, ch: 0 });
+                editor.scrollIntoView(null, 120);
+              }
+            });
           } else {
             li.textContent = String(step);
           }
           ol.appendChild(li);
         });
-        out.appendChild(ol);
+        wrap.appendChild(ol);
+        wrap.appendChild(snapPane);
+        out.appendChild(wrap);
+        var last = ol.querySelector("li.trace-step:last-child");
+        if (last) last.click();
       }
     } else if (res.status === "unknown") {
       endBusy("warn", "unknown");
@@ -418,6 +514,23 @@
         annotate(res.diagnostics);
       }
     }
+    renderFinals(out, res);
+  }
+
+  function renderFinals(out, res) {
+    if (!res.finals || !res.finals.length) return;
+    var head = document.createElement("div");
+    head.className = "finals-head";
+    head.textContent = res.finals.length + " distinct final state" +
+      (res.finals.length === 1 ? "" : "s") +
+      (res.finals_complete === false ? " (may be incomplete)" : "") + ":";
+    out.appendChild(head);
+    var list = document.createElement("div");
+    list.className = "finals-list";
+    res.finals.forEach(function (st, i) {
+      list.appendChild(Snapshot.render(st, { title: "final state " + (i + 1) }));
+    });
+    out.appendChild(list);
   }
 
   // ------------------------------------------------------------- share
