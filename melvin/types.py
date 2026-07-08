@@ -107,8 +107,10 @@ class TypeInfo:
     call_graph: Dict[str, Set[str]] = field(default_factory=dict)
     classes: Dict[str, Dict[str, str]] = field(default_factory=dict)  # C -> {field -> boogie type}
     field_locks: Set[Tuple[str, str]] = field(default_factory=set)    # (C, field) lock fields
-    expr_class: Dict[int, str] = field(default_factory=dict)          # id(expr) -> class name
+    expr_class: Dict[int, str] = field(default_factory=dict)          # id(expr) -> class/array type
     call_target: Dict[int, str] = field(default_factory=dict)         # id(Call_) -> resolved fn name
+    arrays: Dict[str, str] = field(default_factory=dict)              # array type -> elem boogie type
+    array_fields: Dict[Tuple[str, str], str] = field(default_factory=dict)  # (C, f) -> array type
 
     def scope_locals(self, key: str) -> Dict[str, str]:
         return self.locals.get(key, {})
@@ -133,6 +135,9 @@ class TypeChecker:
         self.expr_class: Dict[int, str] = {}
         self.call_target: Dict[int, str] = {}
         self.null_sites: List[Tuple[A.NullLit, TVar]] = []
+        self.arrays: Dict[str, str] = {}
+        self.array_fields: Dict[Tuple[str, str], str] = {}
+        self.newarray_sites: List[Tuple[A.NewArray, TVar]] = []
 
     # -- entry --------------------------------------------------------------
     def check(self) -> TypeInfo:
@@ -144,6 +149,7 @@ class TypeChecker:
         self._check_specs_and_bodies()
         self._check_atomic_non_recursive()
         self._resolve_nulls()
+        self._resolve_newarrays()
         return TypeInfo(
             globals=self.globals,
             lock_names=self.lock_names,
@@ -156,6 +162,8 @@ class TypeChecker:
             field_locks=self.field_locks,
             expr_class=self.expr_class,
             call_target=self.call_target,
+            arrays=self.arrays,
+            array_fields=self.array_fields,
         )
 
     def _collect_classes(self) -> None:
@@ -169,7 +177,19 @@ class TypeChecker:
                 if fld.name in fields:
                     raise TypeError_(
                         f"duplicate field {fld.name!r} in class {c.name!r}", fld.span)
-                fields[fld.name] = self._surface_type(fld.type, fld.span)
+                if fld.type.is_array:
+                    # an array field introduces its own array reference type;
+                    # its [i] clauses give the element access spec
+                    if fld.type.name not in ("int", "bool"):
+                        raise TypeError_(
+                            f"array fields must have scalar elements "
+                            f"(int[] or bool[]), not {fld.type.name}[]", fld.span)
+                    at = f"Arr_{c.name}_{fld.name}"
+                    self.arrays[at] = fld.type.name
+                    self.array_fields[(c.name, fld.name)] = at
+                    fields[fld.name] = at
+                else:
+                    fields[fld.name] = self._surface_type(fld.type, fld.span)
                 if fld.is_lock:
                     self.field_locks.add((c.name, fld.name))
             self.classes[c.name] = fields
@@ -228,11 +248,23 @@ class TypeChecker:
                 self._infer(cl.cond, BOOL, env)
 
         # field mover-clause conditions: over this, this's fields, and tid only.
+        # Element ([i]) clauses of array fields are state-independent: they may
+        # mention only tid and the index variable.
         for c in self.prog.classes:
             for fld in c.fields:
-                env = _Env(self, scope=None, this_cls=c.name)
                 for cl in fld.clauses:
-                    self._infer(cl.cond, BOOL, env)
+                    if cl.index is not None:
+                        if (c.name, fld.name) not in self.array_fields:
+                            raise TypeError_(
+                                f"[{cl.index}] element clauses are only allowed "
+                                f"on array fields", cl.span)
+                        env = _Env(self, scope=None)
+                        env.push_bound(cl.index, INT)
+                        self._infer(cl.cond, BOOL, env)
+                        env.pop_bound(cl.index)
+                    else:
+                        env = _Env(self, scope=None, this_cls=c.name)
+                        self._infer(cl.cond, BOOL, env)
 
         for f in self.prog.funcs:
             scope = f"fn:{f.name}"
@@ -302,6 +334,20 @@ class TypeChecker:
             return
         if isinstance(s, A.FieldWrite):
             self._check_field_write(s, env)
+            return
+        if isinstance(s, A.ArrayWrite):
+            bt = _prune(self._infer_expr(s.base, env))
+            if not (isinstance(bt, str) and bt in self.arrays):
+                raise TypeError_(
+                    "the target of an element write must be a heap array "
+                    "reference", s.span)
+            self._require_local_expr(s.base, env, "the array of an element write")
+            self._require_local_expr(s.index, env, "an array index")
+            self._require_local_expr(s.rhs, env, "the right-hand side of an element write")
+            self._infer(s.index, INT, env)
+            self._infer(s.rhs, self.arrays[bt], env)
+            self.expr_class[id(s)] = bt
+            self.assign_kind[id(s)] = ("elemwrite", bt)
             return
         if isinstance(s, A.UnstableRead):
             if s.source_expr is not None:
@@ -433,6 +479,20 @@ class TypeChecker:
             self.expr_class[id(s.rhs)] = s.rhs.cls
             self.assign_kind[id(s)] = ("new", s.rhs.cls)
             return
+        # array allocation: local = new T[n]
+        if isinstance(s.rhs, A.NewArray):
+            if lhs in self.globals:
+                raise TypeError_(
+                    "cannot allocate directly into a global; assign new to a "
+                    "local first", s.span)
+            self._require_local_expr(s.rhs.size, env, "an array allocation size")
+            self._infer(s.rhs.size, INT, env)
+            lt = env.local_type(lhs, s.span)
+            tv = TVar()
+            unify(lt, tv, s.span, "array allocation")
+            self.newarray_sites.append((s.rhs, tv))
+            self.assign_kind[id(s)] = ("newarray", None)
+            return
         if lhs in self.globals:
             # global write: rhs must mention only locals (paper requirement)
             if globals_in_rhs or field_reads:
@@ -452,6 +512,18 @@ class TypeChecker:
                   s.span, "field read")
             self.assign_kind[id(s)] = ("fieldread", f"{cls}.{fname}")
             return
+        # element read: local = a[i]  (a, i local-only; heap arrays only)
+        if isinstance(s.rhs, A.Index) and lhs != "result":
+            bt = _prune(self._infer_expr(s.rhs.base, env))
+            if isinstance(bt, str) and bt in self.arrays:
+                self._require_local_expr(s.rhs.base, env, "the array of an element read")
+                self._require_local_expr(s.rhs.index, env, "an array index")
+                self._infer(s.rhs.index, INT, env)
+                unify(env.local_type(lhs, s.span), self.arrays[bt],
+                      s.span, "element read")
+                self.expr_class[id(s.rhs)] = bt
+                self.assign_kind[id(s)] = ("elemread", bt)
+                return
         # lhs is a local
         if lhs == "result":
             if globals_in_rhs or field_reads:
@@ -532,12 +604,26 @@ class TypeChecker:
     def _resolve_nulls(self) -> None:
         for e, tv in self.null_sites:
             r = _prune(tv)
-            if isinstance(r, str) and r in self.classes:
+            if isinstance(r, str) and (r in self.classes or r in self.arrays):
                 self.expr_class[id(e)] = r
             else:
                 raise TypeError_(
                     "cannot determine the class of this 'null' from context",
                     e.span)
+
+    def _resolve_newarrays(self) -> None:
+        for e, tv in self.newarray_sites:
+            r = _prune(tv)
+            if not (isinstance(r, str) and r in self.arrays):
+                raise TypeError_(
+                    "cannot determine which array field this allocation is for "
+                    "(store it into an array field or a typed local first)",
+                    e.span)
+            if self.arrays[r] != e.elem:
+                raise TypeError_(
+                    f"array element type mismatch: allocating {e.elem}[] for a "
+                    f"{self.arrays[r]}[] field", e.span)
+            self.expr_class[id(e)] = r
 
     def _check_atomic_non_recursive(self) -> None:
         # M-def-atomic requires atomic functions to be non-recursive.
@@ -575,7 +661,7 @@ class TypeChecker:
             tv = TVar()
             self.null_sites.append((e, tv))
             return tv
-        if isinstance(e, A.New):
+        if isinstance(e, (A.New, A.NewArray)):
             raise TypeError_(
                 "'new' may only appear as the entire right-hand side of an "
                 "assignment to a local", e.span)
@@ -622,18 +708,30 @@ class TypeChecker:
         if isinstance(e, A.Index):
             it = self._infer_expr(e.index, env)
             unify(it, INT, e.span)
-            # base is an array; result is element type (approximate as int/value)
-            if isinstance(e.base, A.Var) and e.base.name in self.array_names:
-                return INT
-            self._infer_expr(e.base, env)
+            # heap array indexing: base resolves to an array reference type
+            bt = _prune(self._infer_expr(e.base, env))
+            if isinstance(bt, str) and bt in self.arrays:
+                self.expr_class[id(e)] = bt
+                return self.arrays[bt]
+            # legacy value-semantics arrays (top-level globals of type T[])
             return INT
         if isinstance(e, A.Call):
             return self._infer_call(e, env)
         if isinstance(e, A.Quant):
             if e.cls is not None:
-                if e.cls not in self.classes:
+                if "." in e.cls:
+                    cname, fname = e.cls.split(".", 1)
+                    at = self.array_fields.get((cname, fname))
+                    if at is None:
+                        raise TypeError_(
+                            f"{e.cls!r} is not an array field", e.span)
+                    env.push_bound(e.var, at)
+                elif e.cls == "int":
+                    env.push_bound(e.var, INT)
+                elif e.cls in self.classes:
+                    env.push_bound(e.var, e.cls)
+                else:
                     raise TypeError_(f"unknown class {e.cls!r} in quantifier", e.span)
-                env.push_bound(e.var, e.cls)
             else:
                 unify(self._infer_expr(e.lo, env), INT, e.span)
                 unify(self._infer_expr(e.hi, env), INT, e.span)
@@ -662,6 +760,14 @@ class TypeChecker:
 
     def _infer_call(self, e: A.Call, env: "_Env") -> object:
         name = e.name
+        if name == "length":
+            if len(e.args) != 1:
+                raise TypeError_("length() takes one array argument", e.span)
+            at = _prune(self._infer_expr(e.args[0], env))
+            if not isinstance(at, str) or at not in self.arrays:
+                raise TypeError_("length() expects a heap array reference", e.span)
+            self.expr_class[id(e)] = at
+            return INT
         args = [self._infer_expr(a, env) for a in e.args]
         if name == "head":
             unify(args[0], LISTT, e.span); return INT
@@ -732,6 +838,8 @@ def _children(e: A.Expr) -> List[A.Expr]:
         return [e.base, e.index]
     if isinstance(e, A.FieldAccess):
         return [e.base]
+    if isinstance(e, A.NewArray):
+        return [e.size]
     if isinstance(e, A.MCall):
         return [e.receiver] + list(e.args)
     if isinstance(e, A.Quant):

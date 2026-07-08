@@ -1,0 +1,36 @@
+// Heap arrays with per-element mover specifications.
+//
+// A Table holds an array in which slot i belongs to thread i: accessing
+// slots[i] is a both-mover exactly when i == tid (the FastTrack-style
+// index-dependent discipline).  Each thread installs an array and works on
+// its own slot without further synchronization; the rely/guarantee pair
+// quantifies over every array of the field (forall a in Table.slots) to
+// carry slot values across yields: each thread promises to touch only its
+// own slot, and relies on its slot being left alone.
+
+class Table {
+  // The reference field itself is a plain non-mover; the [i] clause is the
+  // element spec of the arrays it holds.
+  var int[] slots  read  non-mover
+                   write non-mover
+                   [i] both-mover if i == tid;
+}
+
+relies     forall a in Table.slots . a[tid] == \old(a[tid])
+guarantees forall a in Table.slots . (forall j : int . (j == tid || a[j] == \old(a[j])))
+requires   true
+ensures    true
+main() {
+  yield;
+  t = new Table;
+  a = new int[tid + 1];    // big enough for this thread's slot
+  t.slots = a;             // non-mover: the commit of this sequence
+  a[tid] = 5;              // both-mover: slot tid belongs to this thread
+  yield;
+  v = a[tid];              // survives the yield: the rely pins slot tid
+  assert v == 5;
+  yield;
+}
+
+thread { main(); }
+thread { main(); }

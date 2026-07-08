@@ -376,6 +376,8 @@ class Parser:
             return A.Assign(e.name, rhs, span)
         if isinstance(e, A.FieldAccess):
             return A.FieldWrite(e.base, e.field, rhs, span)
+        if isinstance(e, A.Index):
+            return A.ArrayWrite(e.base, e.index, rhs, span)
         raise ParseError("invalid assignment target", e.span)
 
     # -- conditional actions ------------------------------------------------
@@ -512,6 +514,12 @@ class Parser:
             self.advance(); return A.Var("this", t.span)
         if self.at("new"):
             self.advance()
+            if self.at("int") or self.at("bool"):
+                elem = self.advance().text
+                self.expect("[")
+                size = self.parse_expr()
+                end = self.expect("]").span
+                return A.NewArray(elem, size, Span.merge(t.span, end))
             cls = self.expect_kind("id", "class name").text
             return A.New(cls, Span.merge(t.span, self.toks[self.p - 1].span))
         if self.at("tid"):
@@ -552,14 +560,26 @@ class Parser:
         kind = kw.text
         var = self.expect_kind("id", "quantifier variable").text
         if self.at(":"):
-            # reference form: forall o : C . body
+            # typed form: forall o : C . body  (a class) or forall j : int . body
             self.advance()
-            cls = self.expect_kind("id", "class name").text
+            if self.at("int"):
+                cls = self.advance().text
+            else:
+                cls = self.expect_kind("id", "class name").text
             self.expect(".")
             body = self.parse_expr()
             return A.Quant(kind, var, None, None, body,
                            Span.merge(kw.span, body.span), cls=cls)
         self.expect("in")
+        if not self.at("["):
+            # array form: forall a in C.f . body  ranges over field C.f's arrays
+            cls = self.expect_kind("id", "class name").text
+            self.expect(".")
+            cls += "." + self.expect_kind("id", "array field name").text
+            self.expect(".")
+            body = self.parse_expr()
+            return A.Quant(kind, var, None, None, body,
+                           Span.merge(kw.span, body.span), cls=cls)
         self.expect("[")
         lo = self.parse_expr()
         self.expect(",")

@@ -53,12 +53,21 @@ def fmap_name(cls: str, fld: str) -> str:
 
 
 def alloc_name(cls: str) -> str:
-    """Boogie name of the allocation set of class `cls`."""
+    """Boogie name of the allocation set of class (or array type) `cls`."""
     return f"alloc_{cls}"
 
 
 def null_name(cls: str) -> str:
     return f"null_{cls}"
+
+
+def arr_elems_name(at: str) -> str:
+    """Boogie name of the elements map of array type `at` (= Arr_C_f)."""
+    return f"elems_{at[4:]}"
+
+
+def arr_len_name(at: str) -> str:
+    return f"len_{at[4:]}"
 
 
 def default_value(boogie_type: str) -> Optional[str]:
@@ -104,6 +113,11 @@ class Translator:
             if m not in cur:
                 raise TypeError_(f"field {e.field!r} is not accessible here", e.span)
             return f"{cur[m]}[{self.tr(e.base, cur, old)}]"
+        if t is A.Index and id(e) in self.ti.expr_class:
+            at = self.ti.expr_class[id(e)]
+            m = arr_elems_name(at)
+            return (f"{cur[m]}[{self.tr(e.base, cur, old)}]"
+                    f"[{self.tr(e.index, cur, old)}]")
         if t is A.Tid:
             return cur.get("tid", "tid")
         if t is A.Result:
@@ -132,9 +146,13 @@ class Translator:
             old2 = dict(old); old2[v] = v
             body = self.tr(e.body, cur2, old2)
             if e.cls is not None:
+                bt = e.cls
+                if "." in bt:
+                    cname, fname = bt.split(".", 1)
+                    bt = self.ti.array_fields[(cname, fname)]
                 if e.kind == "forall":
-                    return f"(forall {v}: {e.cls} :: ({body}))"
-                return f"(exists {v}: {e.cls} :: ({body}))"
+                    return f"(forall {v}: {bt} :: ({body}))"
+                return f"(exists {v}: {bt} :: ({body}))"
             lo = self.tr(e.lo, cur, old)
             hi = self.tr(e.hi, cur, old)
             if e.kind == "forall":
@@ -156,6 +174,9 @@ class Translator:
         return f"({l} {self._OPS[e.op]} {r})"
 
     def _call(self, e: A.Call, cur, old) -> str:
+        if e.name == "length" and id(e) in self.ti.expr_class:
+            at = self.ti.expr_class[id(e)]
+            return f"{cur[arr_len_name(at)]}[{self.tr(e.args[0], cur, old)}]"
         args = ", ".join(self.tr(a, cur, old) for a in e.args)
         if e.name in BUILTIN_FUNCS:
             return f"{e.name}({args})"
@@ -175,6 +196,13 @@ class Lowerer:
             self.heap_types[alloc_name(cname)] = f"[{cname}]bool"
             for fld, ft in fields.items():
                 self.heap_types[fmap_name(cname, fld)] = f"[{cname}]{ft}"
+        for at, elemty in ti.arrays.items():
+            self.heap_types[alloc_name(at)] = f"[{at}]bool"
+            self.heap_types[arr_elems_name(at)] = f"[{at}][int]{elemty}"
+            self.heap_types[arr_len_name(at)] = f"[{at}]int"
+        # reverse lookup: array type -> its declaring (class, field)
+        self.arr_field: Dict[str, Tuple[str, str]] = {
+            at: cf for cf, at in ti.array_fields.items()}
         # Per-call-site spec-substitution temps, filled by _scan_temps.
         self.call_binds: Dict[int, Dict[str, Tuple[str, str]]] = {}
         # Per-call-site point-havoc frame: [(value temp, field map)] when the
@@ -351,6 +379,59 @@ class Lowerer:
                         f"the receiver of this {what} may be null")
         return recv
 
+    # ---------------------------------------------------------- array movers
+    def _elem_clauses(self, at: str, access: str) -> List[A.MoverClause]:
+        cls, fld = self.arr_field[at]
+        vd = self.prog.find_field(cls, fld)
+        if vd is None:
+            return []
+        return [cl for cl in vd.clauses if cl.index is not None
+                and (cl.access is None or cl.access == access)]
+
+    def _elem_mover_static(self, at: str, access: str) -> Effect:
+        return join_all(cl.mover for cl in self._elem_clauses(at, access))
+
+    def _elem_mover_ite(self, clauses: List[A.MoverClause], idx: str,
+                        tid: str = "tid") -> str:
+        """Element clause guards are state-independent (tid + index only), so
+        they translate against a minimal environment with each clause's index
+        variable bound to `idx`."""
+        expr = str(E_CODE)
+        for cl in reversed(clauses):
+            env = {cl.index: idx, "tid": tid}
+            cond = self.tr.tr(cl.cond, env, env)
+            expr = f"(if {cond} then {EFF_CODE[cl.mover.name]} else {expr})"
+        return expr
+
+    def _emit_elem_access(self, at: str, access: str, base: A.Expr,
+                          index: A.Expr, scope: str, span: Span,
+                          what: str) -> Tuple[str, str]:
+        """Common prologue of an element access: capture the array reference
+        and index, check null and bounds, snapshot, and check the element
+        mover.  Returns (array temp, index temp)."""
+        cur = self.cur_map(scope)
+        aref = f"recv_{at}"
+        self.em.line(f"{aref} := {self.tr.tr(base, cur, cur)};")
+        self.em.assert_(f"{aref} != {null_name(at)}", span,
+                        f"the array of this {what} may be null")
+        self.em.line(f"aidx := {self.tr.tr(index, cur, cur)};")
+        self.em.assert_(
+            f"0 <= aidx && aidx < v_{arr_len_name(at)}[{aref}]", span,
+            f"the index of this {what} may be out of bounds")
+        self.snapshot("pre", scope, only_globals=True)
+        clauses = self._elem_clauses(at, access)
+        self.em.line(f"mv := {self._elem_mover_ite(clauses, 'aidx')};")
+        self.em.assert_(
+            f"mv != {E_CODE}", span,
+            f"{what} is not permitted here by the element mover specification "
+            f"(possible data race)")
+        self.em.line("eff := seqEff(eff, mv);")
+        self.em.assert_(
+            f"eff != {E_CODE}", span,
+            f"{what} breaks reducibility here: this reducible sequence is not "
+            f"of the form R*[N]L* (insert a yield to split it)")
+        return aref, "aidx"
+
     # ------------------------------------------------------------ temp scan
     def _scan_temps(self, body: List[A.Stmt], scope: str) -> List[Tuple[str, str]]:
         """Collect the auxiliary locals a procedure body needs: per-class
@@ -377,6 +458,16 @@ class Lowerer:
                         decls[f"recv_{cls}"] = cls
                     elif kind == "new":
                         decls[f"newref_{gv}"] = gv
+                    elif kind == "elemread":
+                        decls[f"recv_{gv}"] = gv
+                        decls["aidx"] = "int"
+                    elif kind == "newarray":
+                        at = self.ti.expr_class[id(st.rhs)]
+                        decls[f"newref_{at}"] = at
+                elif isinstance(st, A.ArrayWrite):
+                    kind, at = self.ti.assign_kind[id(st)]
+                    decls[f"recv_{at}"] = at
+                    decls["aidx"] = "int"
                 elif isinstance(st, A.FieldWrite):
                     kind, gv = self.ti.assign_kind[id(st)]
                     cls = field_kind_cls(gv)
@@ -439,6 +530,10 @@ class Lowerer:
             header.append(f"// class {c.name}")
             header.append(f"type {c.name};")
             header.append(f"const unique {null_name(c.name)}: {c.name};")
+        for at in self.ti.arrays:
+            header.append(f"// array type {at}")
+            header.append(f"type {at};")
+            header.append(f"const unique {null_name(at)}: {at};")
         for name, arity in sorted(self.tr.unknown_funcs.items()):
             sig = ", ".join(["int"] * arity)
             header.append(f"function {name}({sig}) returns (bool);")
@@ -561,6 +656,9 @@ class Lowerer:
         if isinstance(s, A.FieldWrite):
             self.emit_field_write(s, ctx)
             return
+        if isinstance(s, A.ArrayWrite):
+            self.emit_array_write(s, ctx)
+            return
         if isinstance(s, A.UnstableRead):
             if s.source_expr is not None:
                 cls = self.ti.expr_class[id(s.source_expr)]
@@ -603,6 +701,13 @@ class Lowerer:
             self.em.line(f"v_{s.lhs} := v_{fmap_name(cls, fld)}[{recv}];")
         elif kind == "new":
             self.emit_new(s, gvar, ctx)
+        elif kind == "elemread":
+            at = gvar
+            aref, aidx = self._emit_elem_access(
+                at, "read", s.rhs.base, s.rhs.index, scope, s.span, "element read")
+            self.em.line(f"v_{s.lhs} := v_{arr_elems_name(at)}[{aref}][{aidx}];")
+        elif kind == "newarray":
+            self.emit_new_array(s, ctx)
         else:  # local computation: both-mover, no effect change
             self.em.line(f"v_{s.lhs} := {self.tr.tr(s.rhs, cur, cur)};")
 
@@ -624,6 +729,35 @@ class Lowerer:
             # types without a canonical default start unconstrained: the map
             # value at a never-allocated index was never pinned by anyone
         self.em.line(f"v_{s.lhs} := {ref};")
+
+    def emit_new_array(self, s: A.Assign, ctx: "_Ctx") -> None:
+        """`x = new T[n]`: pick a fresh unallocated array reference and fix its
+        length; the elements start unconstrained.  Like object allocation this
+        is invisible to other threads (a both-mover with no spec check)."""
+        scope = ctx.scope
+        cur = self.cur_map(scope)
+        at = self.ti.expr_class[id(s.rhs)]
+        ref = f"newref_{at}"
+        am = alloc_name(at)
+        size = self.tr.tr(s.rhs.size, cur, cur)
+        self.em.assert_(f"({size}) >= 0", s.span,
+                        "the size of this array allocation may be negative")
+        self.em.line(f"havoc {ref};")
+        self.em.line(f"assume {ref} != {null_name(at)} && !v_{am}[{ref}];")
+        self.em.line(f"v_{am} := v_{am}[{ref} := true];")
+        lm = arr_len_name(at)
+        self.em.line(f"v_{lm} := v_{lm}[{ref} := {size}];")
+        self.em.line(f"v_{s.lhs} := {ref};")
+
+    def emit_array_write(self, s: A.ArrayWrite, ctx: "_Ctx") -> None:
+        scope = ctx.scope
+        cur = self.cur_map(scope)
+        kind, at = self.ti.assign_kind[id(s)]
+        aref, aidx = self._emit_elem_access(
+            at, "write", s.base, s.index, scope, s.span, "element write")
+        em = arr_elems_name(at)
+        val = self.tr.tr(s.rhs, cur, cur)
+        self.em.line(f"v_{em} := v_{em}[{aref} := v_{em}[{aref}][{aidx} := {val}]];")
 
     def emit_acquire(self, s: A.Acquire, ctx: "_Ctx") -> None:
         scope = ctx.scope
@@ -697,12 +831,19 @@ class Lowerer:
 
     def _builtin_rely(self, cur_snap: str, old_snap: str) -> List[str]:
         """Interference facts guaranteed by the semantics itself (not by user
-        relies): other threads only ever allocate, so allocation sets grow."""
+        relies): other threads only ever allocate, so allocation sets grow,
+        and array lengths are fixed at allocation."""
         out = []
         for cname in self.ti.classes:
             am = alloc_name(cname)
             out.append(f"(forall _o: {cname} :: {old_snap}_{am}[_o] ==> "
                        f"{cur_snap}_{am}[_o])")
+        for at in self.ti.arrays:
+            am = alloc_name(at)
+            lm = arr_len_name(at)
+            out.append(f"(forall _a: {at} :: {old_snap}_{am}[_a] ==> "
+                       f"({cur_snap}_{am}[_a] && "
+                       f"{cur_snap}_{lm}[_a] == {old_snap}_{lm}[_a]))")
         return out
 
     def emit_if(self, s: A.If, ctx: "_Ctx") -> None:
@@ -849,6 +990,9 @@ class Lowerer:
             kind, gvar = self.ti.assign_kind[id(s)]
             cls, fld = gvar.split(".", 1)
             return self._field_mover_static(cls, fld, "write")
+        if isinstance(s, A.ArrayWrite):
+            kind, at = self.ti.assign_kind[id(s)]
+            return self._elem_mover_static(at, "write")
         if isinstance(s, A.Assign):
             kind, gvar = self.ti.assign_kind[id(s)]
             if kind == "write":
@@ -858,6 +1002,8 @@ class Lowerer:
             if kind == "fieldread":
                 cls, fld = gvar.split(".", 1)
                 return self._field_mover_static(cls, fld, "read")
+            if kind == "elemread":
+                return self._elem_mover_static(gvar, "read")
             return Effect.B
         if isinstance(s, A.If):
             a1 = self._cond_success_static(s.cond)
@@ -903,10 +1049,17 @@ class Lowerer:
                     mods.add(alloc_name(gvar))
                     for fld in self.ti.classes[gvar]:
                         mods.add(fmap_name(gvar, fld))
+                elif kind == "newarray":
+                    at = self.ti.expr_class[id(st.rhs)]
+                    mods.add(alloc_name(at))
+                    mods.add(arr_len_name(at))
             elif isinstance(st, A.FieldWrite):
                 kind, gvar = self.ti.assign_kind[id(st)]
                 cls, fld = gvar.split(".", 1)
                 mods.add(fmap_name(cls, fld))
+            elif isinstance(st, A.ArrayWrite):
+                kind, at = self.ti.assign_kind[id(st)]
+                mods.add(arr_elems_name(at))
             elif isinstance(st, (A.Acquire, A.Release)):
                 if st.lock_expr is not None:
                     cls = self.ti.expr_class[id(st.lock_expr)]
@@ -1007,8 +1160,10 @@ class Lowerer:
             for st in stmts:
                 if isinstance(st, A.Assign):
                     kind, _ = self.ti.assign_kind[id(st)]
-                    if kind == "new":
+                    if kind in ("new", "newarray"):
                         return False
+                elif isinstance(st, A.ArrayWrite):
+                    return False
                 elif isinstance(st, A.FieldWrite):
                     if not is_this(st.base):
                         return False
@@ -1144,6 +1299,15 @@ class Lowerer:
                 self._field_validity_commute(1, c, xw)
                 self._field_validity_commute(2, c, xw)
                 self._field_validity_commute(4, c, xw)
+        # Array element specs.  Element guards are state-independent (tid and
+        # index only), so condition (3) holds trivially -- no write can change
+        # the mover another thread computes.  Only the commute conditions on
+        # two element writes (possibly to the same array and index) remain.
+        for at in sorted(self.ti.arrays):
+            if self._elem_clauses(at, "write"):
+                self._elem_validity_commute(1, at)
+                self._elem_validity_commute(2, at)
+                self._elem_validity_commute(4, at)
 
     def _validity_commute(self, num: int, xw: A.VarDecl, yw: A.VarDecl) -> None:
         """Emit conditions (1), (2), or (4) for the write-pair (X by t, Y by u).
@@ -1279,6 +1443,58 @@ class Lowerer:
             f"invalid mover specification: a {self._cond_name(num)} to field "
             f"{X!r} by one thread and a write by another (possibly through an "
             f"aliased receiver) do not commute (validity condition {num} fails)",
+        )
+        self.em.dedent()
+        self.em.line("}")
+
+    def _elem_validity_commute(self, num: int, at: str) -> None:
+        """Conditions (1), (2), (4) for two element writes to arrays of type
+        `at`: A1 = <o1[i1] := v1> by t and A2 = <o2[i2] := v2> by u.  The
+        writes commute structurally unless both the arrays and the indices
+        alias, in which case the assertion forces the values to agree."""
+        cls, fld = self.arr_field[at]
+        ety = self.ti.arrays[at]
+        em = arr_elems_name(at)
+        wcl = self._elem_clauses(at, "write")
+
+        def upd(m: str, o: str, i: str, v: str) -> str:
+            return f"{m}[{o} := {m}[{o}][{i} := {v}]]"
+
+        base = f"s_{em}"
+        m1 = upd(base, "o1", "i1", "v1")           # after A1
+        m12 = upd(m1, "o2", "i2", "v2")            # A1 then A2
+        m2 = upd(base, "o2", "i2", "v2")           # after A2
+        m21 = upd(m2, "o1", "i1", "v1")            # A2 then A1
+
+        mover1 = self._elem_mover_ite(wcl, "i1", "t")
+        mover2 = self._elem_mover_ite(wcl, "i2", "u")
+        if num == 1:
+            h1 = f"leqEff({mover1}, {R_CODE})"
+            h2 = f"leqEff({mover2}, {N_CODE})"
+        else:  # 2 and 4 coincide for state-independent element movers
+            h1 = f"leqEff({mover1}, {N_CODE})"
+            h2 = f"leqEff({mover2}, {L_CODE})"
+
+        self.em.blank()
+        self.em.line(f"// validity({num}): element writes to {cls}.{fld} arrays commute")
+        self.em.line(f"procedure {{:entrypoint}} AValid{num}_{at}()")
+        self.em.line("{")
+        self.em.indent()
+        self.em.line(f"var s_{em}: {self.heap_types[em]};")
+        self.em.line(f"var o1: {at}; var o2: {at};")
+        self.em.line("var i1: int; var i2: int;")
+        self.em.line(f"var v1: {ety}; var v2: {ety};")
+        self.em.line("var t: int; var u: int;")
+        self.em.line("assume t > 0 && u > 0 && t != u;")
+        self.em.line(f"assume {h1};")
+        self.em.line(f"assume {h2};")
+        vd = self.prog.find_field(cls, fld)
+        self.em.assert_(
+            f"({m12}[o1][i1] == {m21}[o1][i1]) && ({m12}[o2][i2] == {m21}[o2][i2])",
+            vd.span if vd else None,
+            f"invalid mover specification: two element writes to {fld!r} arrays "
+            f"by different threads (possibly aliasing array and index) do not "
+            f"commute (validity condition {num} fails)",
         )
         self.em.dedent()
         self.em.line("}")
@@ -1482,6 +1698,8 @@ class Lowerer:
         # the initial heap is empty: nothing is allocated yet
         for cname in self.ti.classes:
             self.em.line(f"assume (forall _o: {cname} :: !v_{alloc_name(cname)}[_o]);")
+        for at in self.ti.arrays:
+            self.em.line(f"assume (forall _a: {at} :: !v_{alloc_name(at)}[_a]);")
         cur = {**{g: f"v_{g}" for g in gl}, "tid": "tid"}
         self.em.line(f"assume {self.tr.tr(self.prog.init.pred, cur, cur)};")
         for f in thread_fns:

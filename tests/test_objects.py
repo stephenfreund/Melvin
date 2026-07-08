@@ -262,6 +262,106 @@ atomic requires true ensures true f() {
     assert res.ok, res.render()
 
 
+# -------------------------------------------------------------------- arrays
+
+ARRAY = None  # loaded lazily so front-end tests do not require the file
+
+
+def _array_src():
+    return (EXAMPLES / "obj_array.mml").read_text()
+
+
+def test_array_field_collected():
+    _, ti = tc("class T { var int[] a  non-mover [i] both-mover if i == tid; }")
+    assert ti.array_fields[("T", "a")] == "Arr_T_a"
+    assert ti.arrays["Arr_T_a"] == "int"
+    assert ti.classes["T"]["a"] == "Arr_T_a"
+
+
+def test_element_clause_only_on_arrays():
+    with pytest.raises(MelvinError, match="element clauses"):
+        tc("class T { var int x  [i] both-mover; }")
+
+
+def test_element_guard_may_not_mention_this():
+    with pytest.raises(MelvinError, match="'this'"):
+        tc("class T { var int m non-mover;\n"
+           "var int[] a  [i] both-mover if this.m == tid; }")
+
+
+def test_array_ref_fields_have_ref_semantics():
+    prog, ti = tc("""
+class T { var int[] a  non-mover [i] non-mover; }
+atomic requires x != null ensures true f(T x) {
+  b = x.a;
+  n = length(b);
+  b[0] = 1;
+}
+""")
+    body = prog.find_func("f").body
+    assert ti.assign_kind[id(body[0])] == ("fieldread", "T.a")
+    assert isinstance(body[2], A.ArrayWrite)
+    assert ti.assign_kind[id(body[2])] == ("elemwrite", "Arr_T_a")
+
+
+def test_new_array_needs_nominal_type():
+    with pytest.raises(MelvinError, match="array field"):
+        tc("class T { var int[] a  non-mover [i] non-mover; }\n"
+           "atomic requires true ensures true f() { b = new int[3]; }")
+
+
+@needs_boogie
+def test_obj_array_verifies():
+    assert check_source(_array_src(), "obj_array.mml").ok
+
+
+@needs_boogie
+def test_wrong_slot_is_race():
+    src = _array_src().replace("a[tid] = 5;", "a[tid + 1] = 5;") \
+                      .replace("new int[tid + 1]", "new int[tid + 2]") \
+                      .replace("v = a[tid];", "v = a[tid + 1];")
+    res = check_source(src, "m.mml")
+    assert not res.ok
+    assert any("element" in d.message and "race" in d.message
+               for d in res.diagnostics)
+
+
+@needs_boogie
+def test_out_of_bounds_rejected():
+    src = _array_src().replace("a = new int[tid + 1];", "a = new int[tid];")
+    res = check_source(src, "m.mml")
+    assert not res.ok
+    assert any("out of bounds" in d.message for d in res.diagnostics)
+
+
+@needs_boogie
+def test_unconditional_both_mover_elements_invalid():
+    src = _array_src().replace("[i] both-mover if i == tid;", "[i] both-mover;")
+    res = check_source(src, "m.mml")
+    assert not res.ok
+    assert any("validity condition" in d.message for d in res.diagnostics)
+
+
+@needs_boogie
+def test_null_array_access_rejected():
+    src = _array_src().replace(
+        "  a = new int[tid + 1];    // big enough for this thread's slot\n"
+        "  t.slots = a;             // non-mover: the commit of this sequence\n",
+        "  a = t.slots;             // still null\n")
+    res = check_source(src, "m.mml")
+    assert not res.ok
+    assert any("null" in d.message for d in res.diagnostics)
+
+
+@needs_boogie
+def test_slot_value_lost_without_rely():
+    src = _array_src().replace(
+        "relies     forall a in Table.slots . a[tid] == \\old(a[tid])",
+        "relies     true")
+    res = check_source(src, "m.mml")
+    assert not res.ok
+
+
 def test_untyped_null_receiver_is_type_error():
     with pytest.raises(MelvinError, match="cannot determine the class"):
         tc("class C { var int x  non-mover; }\n"

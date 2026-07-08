@@ -130,6 +130,19 @@ class New(Expr):
 
 
 @dataclass
+class NewArray(Expr):
+    """`new T[n]`: allocate a fresh array of n elements of scalar type T.
+
+    The array's nominal type (which array field's element spec applies) is
+    inferred from how the reference is used.  Only legal as the entire
+    right-hand side of an assignment to a local.
+    """
+    elem: str          # "int" | "bool"
+    size: Expr
+    span: Span
+
+
+@dataclass
 class MCall(Expr):
     """`e.m(args)`: a method call.  Only legal as a statement or as the entire
     right-hand side of an assignment (desugared to `Call_` before checking)."""
@@ -232,6 +245,15 @@ class FieldWrite(Stmt):
     """base.f = rhs : write a field of an object (base, rhs local-only)."""
     base: Expr
     field: str
+    rhs: Expr
+    span: Span
+
+
+@dataclass
+class ArrayWrite(Stmt):
+    """base[index] = rhs : write an element of a heap array (all local-only)."""
+    base: Expr
+    index: Expr
     rhs: Expr
     span: Span
 

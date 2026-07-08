@@ -23,6 +23,7 @@ VERIFYING = [
     "atomic_calls_atomic.mml",
     "obj_counter.mml",
     "obj_counter_client.mml",
+    "obj_array.mml",
 ]
 
 # Programs that must be rejected, with a substring expected in some diagnostic.
