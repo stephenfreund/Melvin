@@ -18,13 +18,14 @@ KEYWORDS = {
     "int", "bool", "lock_t", "value",
     "forall", "exists", "in",
     "head", "tail", "Nil", "None", "Some", "even",
+    "class", "new", "null", "this",
 }
 
 # Multi-character operators, longest first.
 OPERATORS = [
     "==>", "<==>",
     "&&", "||", "==", "!=", "<=", ">=", "::", "->",
-    "=", "<", ">", "+", "-", "*", "/", "%", "!",
+    "=", "<", ">", "+", "-", "*", "/", "%", "!", ":",
     "(", ")", "{", "}", "[", "]", ",", ";", ".", "@",
 ]
 

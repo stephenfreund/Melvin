@@ -3,25 +3,33 @@
 Grammar (informal):
 
     program     := decl*
-    decl        := var_decl | lock_decl | fn_decl | thread_decl
+    decl        := var_decl | lock_decl | class_decl | fn_decl | thread_decl
     var_decl    := 'var' type IDENT mover_clause* ';'
     lock_decl   := 'lock' IDENT mover_clause* ';'
+    class_decl  := 'class' IDENT '{' (var_decl | lock_decl | fn_decl)* '}'
     mover_clause:= ('[' IDENT ']')? ('read'|'write')? MOVER ('if' pred)?
-    fn_decl     := fn_spec IDENT '(' ')' block
+    fn_decl     := fn_spec IDENT '(' params? ')' block
+    params      := type IDENT (',' type IDENT)*
     fn_spec     := 'atomic' MOVER? 'requires' pred 'ensures' pred
                  | 'relies' pred 'guarantees' pred 'requires' pred 'ensures' pred
     thread_decl := 'thread' block
     block       := '{' stmt* '}'
     stmt        := 'skip' ';' | 'yield' ';' | 'wrong' ';'
                  | 'assert' pred ';'
-                 | 'acquire' '(' IDENT ')' ';' | 'release' '(' IDENT ')' ';'
+                 | 'acquire' '(' lvalue ')' ';' | 'release' '(' lvalue ')' ';'
                  | 'if' '(' cond ')' block ('else' block)?
                  | 'while' '(' cond ')' ('invariant' pred)? block
-                 | IDENT '(' ')' ';'
-                 | IDENT '=' '*' IDENT ';'            (unstable read)
-                 | IDENT '=' expr ';'
-    cond        := '!' cond | 'cas' '(' IDENT ',' expr ',' expr ')' | expr
-    pred, expr  := standard precedence climbing (see below)
+                 | postfix ';'                         (call: f(a) / e.m(a))
+                 | IDENT '=' postfix '(' args ')' ';'  (call with result bind)
+                 | IDENT '=' '*' lvalue ';'            (unstable read)
+                 | IDENT '=' 'new' IDENT ';'           (allocation)
+                 | lvalue '=' expr ';'                 (assignment / field write)
+    lvalue      := IDENT | postfix '.' IDENT
+    cond        := '!' cond | 'cas' '(' lvalue ',' expr ',' expr ')' | expr
+    pred, expr  := standard precedence climbing (see below);
+                   postfix adds '.' field selection and 'e.m(args)' calls;
+                   quantifiers: forall/exists v in [lo, hi) . p   (int range)
+                                forall/exists v : C . p           (references)
 """
 
 from __future__ import annotations
@@ -88,6 +96,8 @@ class Parser:
             return self.parse_var_decl()
         if self.at("lock"):
             return self.parse_lock_decl()
+        if self.at("class"):
+            return self.parse_class_decl()
         if self.at("thread"):
             return self.parse_thread_decl()
         if self.at("init"):
@@ -98,10 +108,34 @@ class Parser:
         if self.at("atomic") or self.at("relies"):
             return self.parse_fn_decl()
         raise ParseError(
-            f"expected a declaration (var, lock, thread, atomic, relies) "
+            f"expected a declaration (var, lock, class, thread, atomic, relies) "
             f"but found {self.cur.text!r}",
             self.cur.span,
         )
+
+    def parse_class_decl(self) -> A.ClassDecl:
+        start = self.expect("class").span
+        name = self.expect_kind("id", "class name").text
+        self.expect("{")
+        fields: List[A.VarDecl] = []
+        methods: List[A.FnDecl] = []
+        while not self.at("}"):
+            if self.eof():
+                raise ParseError("unexpected end of file inside class body", self.cur.span)
+            if self.at("var"):
+                fields.append(self.parse_var_decl(owner=name))
+            elif self.at("lock"):
+                fields.append(self.parse_lock_decl(owner=name))
+            elif self.at("atomic") or self.at("relies"):
+                methods.append(self.parse_fn_decl(owner=name))
+            else:
+                raise ParseError(
+                    f"expected a field (var, lock) or method (atomic, relies) "
+                    f"declaration but found {self.cur.text!r}",
+                    self.cur.span,
+                )
+        end = self.expect("}").span
+        return A.ClassDecl(name, fields, methods, Span.merge(start, end))
 
     # -- variable / lock declarations --------------------------------------
     def parse_type(self) -> A.TypeExpr:
@@ -129,20 +163,21 @@ class Parser:
             is_array = True
         return A.TypeExpr(name, args, is_array=is_array)
 
-    def parse_var_decl(self) -> A.VarDecl:
+    def parse_var_decl(self, owner: Optional[str] = None) -> A.VarDecl:
         start = self.expect("var").span
         ty = self.parse_type()
         name = self.expect_kind("id", "variable name").text
         clauses = self.parse_mover_clauses()
         end = self.expect(";").span
-        return A.VarDecl(name, ty, False, clauses, Span.merge(start, end))
+        return A.VarDecl(name, ty, False, clauses, Span.merge(start, end), owner=owner)
 
-    def parse_lock_decl(self) -> A.VarDecl:
+    def parse_lock_decl(self, owner: Optional[str] = None) -> A.VarDecl:
         start = self.expect("lock").span
         name = self.expect_kind("id", "lock name").text
         clauses = self.parse_mover_clauses()
         end = self.expect(";").span
-        return A.VarDecl(name, A.TypeExpr("lock_t"), True, clauses, Span.merge(start, end))
+        return A.VarDecl(name, A.TypeExpr("lock_t"), True, clauses,
+                         Span.merge(start, end), owner=owner)
 
     def parse_mover_clauses(self) -> List[A.MoverClause]:
         clauses: List[A.MoverClause] = []
@@ -179,7 +214,7 @@ class Parser:
         return A.ThreadDecl(body, Span.merge(start, self.toks[self.p - 1].span))
 
     # -- function ----------------------------------------------------------
-    def parse_fn_decl(self) -> A.FnDecl:
+    def parse_fn_decl(self, owner: Optional[str] = None) -> A.FnDecl:
         start = self.cur.span
         if self.at("atomic"):
             self.advance()
@@ -204,9 +239,24 @@ class Parser:
             spec = A.NonAtomicSpec(relies, guarantees, req, ens)
         name = self.expect_kind("id", "function name").text
         self.expect("(")
+        params: List[A.Param] = []
+        if not self.at(")"):
+            params.append(self.parse_param())
+            while self.at(","):
+                self.advance()
+                params.append(self.parse_param())
         self.expect(")")
         body = self.parse_block()
-        return A.FnDecl(name, spec, body, Span.merge(start, self.toks[self.p - 1].span))
+        if owner is not None:
+            name = f"{owner}.{name}"
+        return A.FnDecl(name, spec, body, Span.merge(start, self.toks[self.p - 1].span),
+                        params=params, cls=owner)
+
+    def parse_param(self) -> A.Param:
+        start = self.cur.span
+        ty = self.parse_type()
+        name = self.expect_kind("id", "parameter name").text
+        return A.Param(name, ty, Span.merge(start, self.toks[self.p - 1].span))
 
     # -- statements --------------------------------------------------------
     def parse_block(self) -> List[A.Stmt]:
@@ -237,19 +287,27 @@ class Parser:
             return A.Assert(e, Span.merge(t.span, e.span))
         if self.at("acquire"):
             self.advance(); self.expect("(")
-            lk = self.expect_kind("id", "lock name").text
+            lk = self.parse_postfix()
             self.expect(")"); self.expect(";")
-            return A.Acquire(lk, t.span)
+            if isinstance(lk, A.Var):
+                return A.Acquire(lk.name, t.span)
+            if isinstance(lk, A.FieldAccess):
+                return A.Acquire(lk.field, t.span, lock_expr=lk)
+            raise ParseError("acquire expects a lock name or a lock field", lk.span)
         if self.at("release"):
             self.advance(); self.expect("(")
-            lk = self.expect_kind("id", "lock name").text
+            lk = self.parse_postfix()
             self.expect(")"); self.expect(";")
-            return A.Release(lk, t.span)
+            if isinstance(lk, A.Var):
+                return A.Release(lk.name, t.span)
+            if isinstance(lk, A.FieldAccess):
+                return A.Release(lk.field, t.span, lock_expr=lk)
+            raise ParseError("release expects a lock name or a lock field", lk.span)
         if self.at("if"):
             return self.parse_if()
         if self.at("while"):
             return self.parse_while()
-        if self.at_kind("id"):
+        if self.at_kind("id") or self.at("this"):
             return self.parse_id_stmt()
         if self.at("result") or self.at("\\result"):
             self.advance()
@@ -284,23 +342,41 @@ class Parser:
         return A.While(cond, body, inv, Span.merge(start, self.toks[self.p - 1].span))
 
     def parse_id_stmt(self) -> A.Stmt:
-        ident = self.advance()
-        # function call:  f();
-        if self.at("("):
+        start = self.cur.span
+        e = self.parse_postfix()
+        # call statements:  f(args);   e.m(args);
+        if self.at(";") and isinstance(e, (A.Call, A.MCall)):
             self.advance()
-            self.expect(")")
-            self.expect(";")
-            return A.Call_(ident.text, ident.span)
-        # assignment
-        self.expect("=")
+            if isinstance(e, A.Call):
+                return A.Call_(e.name, e.span, args=list(e.args))
+            return A.Call_(e.name, e.span, args=list(e.args), receiver=e.receiver)
+        if not self.at("="):
+            raise ParseError(f"expected '=' or ';' but found {self.cur.text!r}",
+                             self.cur.span)
+        self.advance()
+        # unstable read:  r = *x;   r = *e.f;
         if self.at("*"):
+            if not isinstance(e, A.Var):
+                raise ParseError("the target of an unstable read must be a local",
+                                 e.span)
             self.advance()
-            src = self.expect_kind("id", "variable name").text
+            src = self.parse_postfix()
             end = self.expect(";").span
-            return A.UnstableRead(ident.text, src, Span.merge(ident.span, end))
+            span = Span.merge(start, end)
+            if isinstance(src, A.Var):
+                return A.UnstableRead(e.name, src.name, span)
+            if isinstance(src, A.FieldAccess):
+                return A.UnstableRead(e.name, src.field, span, source_expr=src)
+            raise ParseError("the source of an unstable read must be a variable "
+                             "or a field", src.span)
         rhs = self.parse_expr()
         end = self.expect(";").span
-        return A.Assign(ident.text, rhs, Span.merge(ident.span, end))
+        span = Span.merge(start, end)
+        if isinstance(e, A.Var):
+            return A.Assign(e.name, rhs, span)
+        if isinstance(e, A.FieldAccess):
+            return A.FieldWrite(e.base, e.field, rhs, span)
+        raise ParseError("invalid assignment target", e.span)
 
     # -- conditional actions ------------------------------------------------
     def parse_cond(self) -> A.Cond:
@@ -311,13 +387,18 @@ class Parser:
         if self.at("cas"):
             start = self.advance().span
             self.expect("(")
-            target = self.expect_kind("id", "cas target").text
+            tgt = self.parse_postfix()
             self.expect(",")
             expected = self.parse_expr()
             self.expect(",")
             new = self.parse_expr()
             end = self.expect(")").span
-            return A.CasCond(target, expected, new, Span.merge(start, end))
+            span = Span.merge(start, end)
+            if isinstance(tgt, A.Var):
+                return A.CasCond(tgt.name, expected, new, span)
+            if isinstance(tgt, A.FieldAccess):
+                return A.CasCond(tgt.field, expected, new, span, target_expr=tgt)
+            raise ParseError("cas target must be a variable or a field", tgt.span)
         e = self.parse_expr()
         return A.BoolCond(e, e.span)
 
@@ -382,11 +463,29 @@ class Parser:
 
     def parse_postfix(self) -> A.Expr:
         e = self.parse_atom()
-        while self.at("["):
-            self.advance()
-            idx = self.parse_expr()
-            end = self.expect("]").span
-            e = A.Index(e, idx, Span.merge(e.span, end))
+        while True:
+            if self.at("["):
+                self.advance()
+                idx = self.parse_expr()
+                end = self.expect("]").span
+                e = A.Index(e, idx, Span.merge(e.span, end))
+            elif self.at("."):
+                self.advance()
+                fname = self.expect_kind("id", "field or method name").text
+                if self.at("("):
+                    self.advance()
+                    args: List[A.Expr] = []
+                    if not self.at(")"):
+                        args.append(self.parse_expr())
+                        while self.at(","):
+                            self.advance()
+                            args.append(self.parse_expr())
+                    end = self.expect(")").span
+                    e = A.MCall(e, fname, args, Span.merge(e.span, end))
+                else:
+                    e = A.FieldAccess(e, fname, Span.merge(e.span, self.toks[self.p - 1].span))
+            else:
+                break
         return e
 
     def parse_atom(self) -> A.Expr:
@@ -407,6 +506,14 @@ class Parser:
             self.advance(); return A.NilLit(t.span)
         if self.at("None"):
             self.advance(); return A.NoneLit(t.span)
+        if self.at("null"):
+            self.advance(); return A.NullLit(t.span)
+        if self.at("this"):
+            self.advance(); return A.Var("this", t.span)
+        if self.at("new"):
+            self.advance()
+            cls = self.expect_kind("id", "class name").text
+            return A.New(cls, Span.merge(t.span, self.toks[self.p - 1].span))
         if self.at("tid"):
             self.advance(); return A.Tid(t.span)
         if self.at("result") or self.at("\\result"):
@@ -444,6 +551,14 @@ class Parser:
         kw = self.advance()
         kind = kw.text
         var = self.expect_kind("id", "quantifier variable").text
+        if self.at(":"):
+            # reference form: forall o : C . body
+            self.advance()
+            cls = self.expect_kind("id", "class name").text
+            self.expect(".")
+            body = self.parse_expr()
+            return A.Quant(kind, var, None, None, body,
+                           Span.merge(kw.span, body.span), cls=cls)
         self.expect("in")
         self.expect("[")
         lo = self.parse_expr()
