@@ -37,6 +37,10 @@ def main(argv=None) -> int:
                     help="per-file Boogie verification timeout in seconds "
                          f"(default: {DEFAULT_TIMEOUT} = 5 minutes). On timeout the "
                          "file fails with exit code 2.")
+    ap.add_argument("--counterexample", action="store_true",
+                    help="on verification failure, show a source-level "
+                         "counterexample store (from the Boogie model) under "
+                         "each error")
     args = ap.parse_args(argv)
 
     if args.timeout <= 0:
@@ -49,7 +53,8 @@ def main(argv=None) -> int:
             _print_movers(path)
         keep = args.emit_bpl if (args.emit_bpl and i == 0) else None
         result = check_program(
-            path, boogie_path=args.boogie, keep_bpl=keep, timeout=args.timeout
+            path, boogie_path=args.boogie, keep_bpl=keep, timeout=args.timeout,
+            counterexample=args.counterexample,
         )
         if args.show_bpl:
             print(f"// ===== Boogie for {path} =====")

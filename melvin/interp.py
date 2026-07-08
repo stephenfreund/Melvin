@@ -80,12 +80,24 @@ class ExploreResult:
     wrong_reachable: bool
     states_explored: int
     hit_bound: bool
-    trace: Optional[List[str]] = None
+    # Each trace step: {"tid": int, "line": int, "source": str, "store": {...}}
+    # (the store is the state AFTER the step, in store-JSON form).
+    trace: Optional[List[Dict]] = None
+    # Distinct final stores (every thread finished), in store-JSON form,
+    # deduplicated up to equality of globals and isomorphism of the reachable
+    # heap.  `finals_complete` is False if the search stopped early (bound,
+    # early unsafe return) or the cap was hit.
+    finals: List[Dict] = field(default_factory=list)
+    finals_complete: bool = True
+
+
+# Cap on distinct final stores retained (further ones set finals_complete=False).
+FINALS_CAP = 100
 
 
 class Interpreter:
     def __init__(self, prog: A.Program, max_states: int = 200_000,
-                 loop_bound: int = 1000):
+                 loop_bound: int = 1000, source: Optional[str] = None):
         # (re-)run the checker: it desugars `x = f(args)` into Call_ statements,
         # validates the program, and yields the type tables (nominal array
         # types, resolved call targets) the heap semantics needs
@@ -96,6 +108,7 @@ class Interpreter:
         self.loop_bound = loop_bound
         self.globals = [v.name for v in prog.vars]
         self.classes = {c.name: c for c in prog.classes}
+        self.source_lines = source.splitlines() if source else None
         # interned continuation markers for call save/restore (stable identity
         # per call site, so the DFS state key stays finite)
         self._markers: Dict[Tuple[int, str], object] = {}
@@ -306,6 +319,14 @@ class Interpreter:
         seen = set()
         stack = [(start, [])]
         explored = 0
+        finals_seen = set()
+        finals: List[Tuple] = []
+        finals_overflow = False
+
+        def finals_json(complete: bool) -> Tuple[List[Dict], bool]:
+            return ([self._final_json(c) for c in finals],
+                    complete and not finals_overflow)
+
         while stack:
             (state, path) = stack.pop()
             key = self._state_key(state)
@@ -314,23 +335,119 @@ class Interpreter:
             seen.add(key)
             explored += 1
             if explored > self.max_states:
-                return ExploreResult(False, explored, hit_bound=True)
+                fs, fc = finals_json(False)
+                return ExploreResult(False, explored, hit_bound=True,
+                                     finals=fs, finals_complete=fc)
             thread_tuple, frozen_store = state
+            if all(not ts.cont for ts in thread_tuple):
+                # a final state: every thread has finished
+                canon = self._final_canon(frozen_store)
+                if canon not in finals_seen:
+                    if len(finals) < FINALS_CAP:
+                        finals_seen.add(canon)
+                        finals.append(canon)
+                    else:
+                        finals_overflow = True
+                continue
             store = dict(frozen_store)
             for idx, ts in enumerate(thread_tuple):
                 thread_id = idx + 1                      # Tid = {1, 2, ...}
                 successors = self._step(thread_id, ts, store)
                 for (new_ts, new_store, is_wrong) in successors:
                     if is_wrong:
+                        fs, fc = finals_json(False)
                         return ExploreResult(
                             True, explored, hit_bound=False,
-                            trace=(path + [self._descr(thread_id, ts)]) if want_trace else None)
+                            trace=(path + [self._trace_step(thread_id, ts, new_store)])
+                            if want_trace else None,
+                            finals=fs, finals_complete=fc)
                     new_threads = list(thread_tuple)
                     new_threads[idx] = new_ts
                     nstate = (tuple(new_threads), self._freeze(new_store))
                     if self._state_key(nstate) not in seen:
-                        stack.append((nstate, path + [self._descr(thread_id, ts)] if want_trace else []))
-        return ExploreResult(False, explored, hit_bound=False)
+                        stack.append((nstate,
+                                      path + [self._trace_step(thread_id, ts, new_store)]
+                                      if want_trace else []))
+        fs, fc = finals_json(True)
+        return ExploreResult(False, explored, hit_bound=False,
+                             finals=fs, finals_complete=fc)
+
+    # ---------------------------------------------------------- final states
+    @staticmethod
+    def _is_ref(v) -> bool:
+        return isinstance(v, tuple) and len(v) == 3 and v[0] == "ref"
+
+    def _class_fields(self, cls: str) -> List[str]:
+        c = self.classes.get(cls)
+        return [f.name for f in c.fields] if c else []
+
+    def _final_canon(self, frozen_store: Tuple) -> Tuple:
+        """Canonical form of a final store: the globals plus the heap
+        REACHABLE from them, with heap addresses renumbered in deterministic
+        traversal order, so isomorphic heaps coincide and dead thread-locals
+        (and unreachable garbage) are ignored."""
+        store = dict(frozen_store)
+        globals_items = sorted(
+            (k, v) for k, v in store.items() if isinstance(k, str))
+
+        idmap: Dict[Tuple, int] = {}
+        order: List[Tuple] = []
+
+        def visit(v) -> None:
+            if not self._is_ref(v) or v[2] == 0 or v in idmap:
+                return
+            idmap[v] = len(order) + 1
+            order.append(v)
+            t, a = v[1], v[2]
+            for fld in self._class_fields(t):
+                visit(store.get(("fld", t, a, fld), 0))
+
+        for _k, v in globals_items:
+            visit(v)
+
+        def cv(v):
+            if self._is_ref(v):
+                return "null" if v[2] == 0 else f"#{idmap[v]}"
+            return v
+
+        nodes = []
+        for ref in order:
+            t, a = ref[1], ref[2]
+            if t in self.classes:
+                nodes.append((t, tuple(
+                    (fld, cv(store.get(("fld", t, a, fld), 0)))
+                    for fld in sorted(self._class_fields(t)))))
+            else:                             # a heap array
+                n = store.get(("len", t, a), 0)
+                elems = tuple(store.get(("elem", t, a, i), 0)
+                              for i in range(min(n, 4096)))
+                nodes.append((t, ("len", n), elems))
+        return (tuple((k, cv(v)) for k, v in globals_items), tuple(nodes))
+
+    def _arr_label(self, at: str, length) -> str:
+        elem = self.ti.arrays.get(at, "int")
+        return f"{elem}[{length}]"
+
+    def _final_json(self, canon: Tuple) -> Dict:
+        globals_items, nodes = canon
+        objects = []
+        for i, node in enumerate(nodes, 1):
+            if len(node) == 2:                # an object
+                t, fields = node
+                objects.append({"id": f"#{i}", "class": t,
+                                "fields": {f: self._fmt_value(v)
+                                           for f, v in fields}})
+            else:                             # an array
+                t, (_lenlbl, n), elems = node
+                fields = {str(j): self._fmt_value(v)
+                          for j, v in enumerate(elems[:16])}
+                if n > 16:
+                    fields["…"] = f"({n - 16} more)"
+                objects.append({"id": f"#{i}",
+                                "class": self._arr_label(t, n),
+                                "fields": fields})
+        return {"globals": {k: self._fmt_value(v) for k, v in globals_items},
+                "objects": objects}
 
     def _freeze(self, store: Dict) -> Tuple:
         items = [
@@ -349,6 +466,85 @@ class Interpreter:
     def _descr(tid, ts) -> str:
         head = ts.cont[0] if ts.cont else None
         return f"t{tid}:{type(head).__name__ if head else 'done'}"
+
+    def _trace_step(self, tid: int, ts: ThreadState, store_after: Dict) -> Dict:
+        """One structured trace step: which thread ran what (with the source
+        line), and the store after the step."""
+        head = ts.cont[0] if ts.cont else None
+        line = 0
+        text = "done"
+        if head is not None:
+            span = getattr(head, "span", None)
+            if span is not None:
+                line = span.start.line
+            if self.source_lines and 0 < line <= len(self.source_lines):
+                text = self.source_lines[line - 1].strip()
+            else:
+                text = type(head).__name__
+        return {"tid": tid, "line": line, "source": text,
+                "store": self.store_json(store_after)}
+
+    # ------------------------------------------------------ store rendering
+    @staticmethod
+    def _fmt_value(v) -> object:
+        """A JSON-friendly rendering of a store value."""
+        if isinstance(v, bool) or isinstance(v, int):
+            return v
+        if v is None:
+            return "None"
+        if isinstance(v, tuple):
+            if v and v[0] == "some":
+                return f"Some({Interpreter._fmt_value(v[1])})"
+            return "Nil" if not v else "[" + ", ".join(
+                str(Interpreter._fmt_value(x)) for x in v) + "]"
+        return str(v)
+
+    def store_json(self, store) -> Dict:
+        """Store-JSON: {"globals": {...}, "threads": {"1": {...}}, "objects":
+        [{"id": "#1", "class": "C", "fields": {...}}, ...]}.  Every allocated
+        heap object/array is shown (renumbered deterministically); reference
+        values render as the matching "#n" so the UI can draw arrows."""
+        items = dict(store) if not isinstance(store, dict) else store
+
+        # deterministic ids for every allocated object/array
+        idmap: Dict[Tuple, int] = {}
+        for t in sorted(list(self.classes) + list(self.ti.arrays)):
+            for a in range(1, items.get(("next", t), 1)):
+                idmap[("ref", t, a)] = len(idmap) + 1
+
+        def fmt(v):
+            if self._is_ref(v):
+                return "null" if v[2] == 0 else f"#{idmap.get(v, '?')}"
+            return self._fmt_value(v)
+
+        out = {"globals": {}, "threads": {}, "objects": []}
+        for k, v in items.items():
+            if isinstance(k, str):
+                out["globals"][k] = fmt(v)
+            elif isinstance(k, tuple) and len(k) == 2 \
+                    and isinstance(k[0], str) and isinstance(k[1], int):
+                name, tid = k
+                out["threads"].setdefault(str(tid), {})[name] = fmt(v)
+        for ref, i in idmap.items():
+            _tag, t, a = ref
+            if t in self.classes:
+                out["objects"].append({
+                    "id": f"#{i}", "class": t,
+                    "fields": {f: fmt(items.get(("fld", t, a, f), 0))
+                               for f in self._class_fields(t)}})
+            else:
+                n = items.get(("len", t, a), 0)
+                fields = {str(j): fmt(items.get(("elem", t, a, j), 0))
+                          for j in range(min(n, 16))}
+                if n > 16:
+                    fields["…"] = f"({n - 16} more)"
+                out["objects"].append({"id": f"#{i}",
+                                       "class": self._arr_label(t, n),
+                                       "fields": fields})
+        out["globals"] = dict(sorted(out["globals"].items()))
+        for t in out["threads"]:
+            out["threads"][t] = dict(sorted(out["threads"][t].items()))
+        return out
 
     def _step(self, tid: int, ts: ThreadState, store: Dict):
         """Return a list of (new ThreadState, new store dict, wrong?) successors
@@ -569,6 +765,7 @@ def can_go_wrong(prog: A.Program, **kwargs) -> ExploreResult:
 
 def main(argv=None) -> int:
     import argparse
+    import json
     import sys
     from .parser import parse
     from .types import check_types
@@ -585,6 +782,10 @@ def main(argv=None) -> int:
                     help="bound on explored states (default: 200000)")
     ap.add_argument("--trace", action="store_true",
                     help="print a shortest interleaving to `wrong`, if found")
+    ap.add_argument("--json", action="store_true",
+                    help="emit a machine-readable JSON result (implies --trace)")
+    ap.add_argument("--no-finals", action="store_true",
+                    help="do not enumerate the distinct final stores")
     args = ap.parse_args(argv)
 
     try:
@@ -593,29 +794,59 @@ def main(argv=None) -> int:
         prog = parse(src, args.file)
         check_types(prog)                      # reuse the front end for errors
     except (OSError, MelvinError) as e:
-        print(getattr(e, "render", lambda: str(e))())
+        if args.json:
+            print(json.dumps({"result": "error",
+                              "message": getattr(e, "render", lambda: str(e))()}))
+        else:
+            print(getattr(e, "render", lambda: str(e))())
         return 2
 
     if not prog.threads:
-        print("no threads to run: add one or more `thread { ... }` declarations "
-              "(functions alone are not executed).")
+        msg = ("no threads to run: add one or more `thread { ... }` declarations "
+               "(functions alone are not executed).")
+        print(json.dumps({"result": "error", "message": msg}) if args.json else msg)
         return 2
 
-    result = Interpreter(prog, max_states=args.max_states).explore(want_trace=args.trace)
+    interp = Interpreter(prog, max_states=args.max_states, source=src)
+    result = interp.explore(want_trace=args.trace or args.json)
+
+    if args.json:
+        print(json.dumps({
+            "result": ("unsafe" if result.wrong_reachable
+                       else "unknown" if result.hit_bound else "safe"),
+            "states": result.states_explored,
+            "trace": result.trace,
+            "finals": None if args.no_finals else result.finals,
+            "finals_complete": result.finals_complete,
+        }))
+        return 1 if result.wrong_reachable else (3 if result.hit_bound else 0)
+
     if result.wrong_reachable:
         print(f"UNSAFE: some interleaving reaches `wrong` "
               f"(explored {result.states_explored} states).")
         if args.trace and result.trace:
-            print("  interleaving (thread:next-step):")
-            print("    " + " -> ".join(result.trace))
-        return 1
-    if result.hit_bound:
+            print("  failing interleaving:")
+            for step in result.trace:
+                print(f"    t{step['tid']}  {args.file}:{step['line']}  "
+                      f"{step['source']}")
+    elif result.hit_bound:
         print(f"UNKNOWN: hit the {args.max_states}-state bound without reaching "
               f"`wrong` (raise --max-states to explore further).")
-        return 3
-    print(f"SAFE: no interleaving reaches `wrong` "
-          f"(explored {result.states_explored} states, exhaustive).")
-    return 0
+    else:
+        print(f"SAFE: no interleaving reaches `wrong` "
+              f"(explored {result.states_explored} states, exhaustive).")
+
+    if not args.no_finals and result.finals:
+        note = "" if result.finals_complete else "  (may be incomplete)"
+        print(f"{len(result.finals)} distinct final store(s):{note}")
+        for st in result.finals:
+            parts = [f"{k} = {v}" for k, v in st["globals"].items()]
+            for obj in st.get("objects", []):
+                fields = ", ".join(f"{f}: {v}" for f, v in obj["fields"].items())
+                parts.append(f"{obj['id']}: {obj['class']}{{{fields}}}")
+            print("  " + (", ".join(parts) if parts else "(empty store)"))
+
+    return 1 if result.wrong_reachable else (3 if result.hit_bound else 0)
 
 
 if __name__ == "__main__":

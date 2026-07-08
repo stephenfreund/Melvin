@@ -137,6 +137,28 @@ be reflexive and transitive (`R = R*`), because `emit_yield` assumes R once to
 model any number of interference steps. Guarantees need no closure check —
 they are asserted one reducible sequence at a time.
 
+## Usability features (both branches)
+
+* Spec clauses that are literally `true` may be elided; `func f() { ... }`
+  declares a non-atomic all-true-spec function.
+* `melvin-run`: traces show `t<tid> file:line source` per step; distinct
+  final stores are enumerated by default (`--no-finals`), deduplicated up to
+  reachable-heap isomorphism on the objects branch; `--json` emits the
+  structured result (trace steps carry store-JSON) that the demo server
+  relays.
+* `melvin --counterexample`: failed obligations carry a source-level store
+  table decoded from the Boogie model (`/printModel:1`; models are partial —
+  SSA-pruned values may be missing). On the objects branch, field maps are
+  decoded through the model's Select_ graphs into `C#k.f` rows.
+* `annotate.line_details()` powers the demo's hover popups: per line, the
+  mover letter, WHY (clauses quoted from source with matched/ruled-out
+  status), and a schematic abstract store (3-valued forward flow;
+  display-only, approximate).
+* Demo UI: gutter-chip hover popups, a clickable trace scrubber with
+  per-step store snapshots, final-state panels, and counterexample tables;
+  heap objects render as box-and-arrow SVG diagrams (`snapshot.js` +
+  vendored dagre).
+
 ## Web demo
 
 `demo/` holds a FastAPI server (`demo/server/app.py`: verify in-process via

@@ -173,7 +173,7 @@ def test_discovery_failure(monkeypatch):
 def test_verify_timeout_sets_flag(monkeypatch, tmp_path):
     backend = make_backend()
 
-    def fake_run(bpl_path, timeout):
+    def fake_run(bpl_path, timeout, extra=None):
         raise subprocess.TimeoutExpired(cmd="boogie", timeout=timeout, output="partial")
 
     monkeypatch.setattr(backend, "run_raw", fake_run)

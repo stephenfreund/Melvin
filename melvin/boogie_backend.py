@@ -19,7 +19,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .diagnostics import Diagnostic, Span
 
@@ -75,6 +75,130 @@ class Emitter:
 _ERROR_RE = re.compile(r"^(?P<file>.*?)\((?P<line>\d+),(?P<col>\d+)\):\s*(?:Error|error)\b.*?:?\s*(?P<msg>.*)$")
 _SUMMARY_RE = re.compile(r"(?P<verified>\d+)\s+verified,\s+(?P<errors>\d+)\s+error")
 
+# Boogie model entries: `name -> value` (function/map entries open a `{` block).
+_MODEL_ENTRY_RE = re.compile(r"^(?P<name>\S+)\s+->\s+(?P<value>.*)$")
+# Opaque model values like T@List!val!0.
+_OPAQUE_RE = re.compile(r"^T@(?P<type>\w+)!val!(?P<n>\d+)$")
+
+# Effect codes (prelude.py) back to mover letters, for eff/mv model values.
+_EFF_LETTER = {0: "Y", 1: "B", 2: "R", 3: "L", 4: "N", 5: "E"}
+
+
+def _parse_model_block(lines: List[str]) -> Tuple[Dict[str, str], Dict[str, List]]:
+    """Parse a `*** MODEL` block into (scalar entries, function graphs).
+    Scalars are name -> value; each function graph is a list of
+    (arg-tuple, value) rows (its `else` row is dropped)."""
+    out: Dict[str, str] = {}
+    funcs: Dict[str, List] = {}
+    fname: Optional[str] = None
+    for raw in lines:
+        line = raw.strip()
+        if fname is not None:
+            if line == "}":
+                fname = None
+                continue
+            # row format: `arg1 arg2 ... -> value`
+            if "->" in line and not line.startswith("else"):
+                argstr, val = line.rsplit("->", 1)
+                funcs[fname].append((tuple(argstr.split()), val.strip()))
+            continue
+        m = _MODEL_ENTRY_RE.match(line)
+        if not m:
+            continue
+        value = m.group("value").strip()
+        if value.endswith("{"):
+            fname = m.group("name")
+            funcs[fname] = []
+            continue
+        out[m.group("name")] = value
+    return out, funcs
+
+
+def _clean_value(v: str) -> str:
+    """Normalize a Boogie model value for display."""
+    v = v.strip()
+    m = re.match(r"^\(-\s*(\d+)\)$", v)
+    if m:
+        return f"-{m.group(1)}"
+    m = _OPAQUE_RE.match(v)
+    if m:
+        return f"{m.group('type')}#{m.group('n')}"
+    return v
+
+
+def _last_incarnation(raw: Dict[str, str], base: str) -> Optional[str]:
+    """Boogie models list SSA incarnations (`v_x`, `v_x@0`, `v_x@1`, ...);
+    the highest incarnation is the value at the end of the failing path."""
+    best_k, best = -1, None
+    for name, value in raw.items():
+        stem, _, idx = name.partition("@")
+        if stem != base:
+            continue
+        k = int(idx) if idx.isdigit() else -0.5  # bare name = initial value
+        if best is None or k >= best_k:
+            best_k, best = k, value
+    return best
+
+
+def model_table(raw: Dict[str, str], funcs: Optional[Dict[str, List]] = None,
+                class_fields: Optional[Dict[str, Dict]] = None) -> List[Tuple[str, str]]:
+    """Map a raw Boogie model to source-level rows for the failing procedure:
+    tid, the running effect as a mover letter, each store variable's current
+    value (and its `\\old` value when the model constrains it and it differs),
+    and -- via the model's Select_ graphs -- the known field values of heap
+    objects, as `C#k.f` rows."""
+    funcs = funcs or {}
+    class_fields = class_fields or {}
+    rows: List[Tuple[str, str]] = []
+    tid = _last_incarnation(raw, "tid")
+    if tid is not None:
+        rows.append(("tid", _clean_value(tid)))
+    eff = _last_incarnation(raw, "eff")
+    if eff is not None and _clean_value(eff).lstrip("-").isdigit():
+        code = int(_clean_value(eff))
+        rows.append(("eff", _EFF_LETTER.get(code, str(code))))
+
+    # index all two-argument Select_ rows: (map value, index value) -> value
+    select: Dict[Tuple[str, str], str] = {}
+    for name, frows in funcs.items():
+        if name.startswith("Select_"):
+            for args, val in frows:
+                if len(args) == 2:
+                    select[(args[0].strip("|"), args[1].strip("|"))] = val
+
+    def heap_rows(var: str, base: str) -> List[Tuple[str, str]]:
+        """Decode a field-map variable f_<C>_<fld> into per-object rows."""
+        for cname in sorted(class_fields, key=len, reverse=True):
+            if var.startswith(f"f_{cname}_"):
+                fld = var[len(f"f_{cname}_"):]
+                mapval = _last_incarnation(raw, base)
+                if mapval is None:
+                    return []
+                mapval = mapval.strip("|")
+                out = []
+                for (m, o), val in sorted(select.items()):
+                    if m == mapval:
+                        out.append((f"{_clean_value(o)}.{fld}",
+                                    _clean_value(val)))
+                return out
+        return []
+
+    bases = sorted({name.partition("@")[0] for name in raw})
+    for base in bases:
+        if not base.startswith("v_"):
+            continue
+        var = base[2:]
+        if var.startswith(("f_", "alloc_", "elems_", "len_")):
+            rows.extend(heap_rows(var, base))
+            continue
+        cur = _last_incarnation(raw, base)
+        if cur is not None:
+            rows.append((var, _clean_value(cur)))
+        old = _last_incarnation(raw, f"o_{var}")
+        if old is not None and old != cur:
+            rows.append((f"\\old({var})", _clean_value(old)))
+    return rows
+
 
 class BoogieError(RuntimeError):
     pass
@@ -107,8 +231,9 @@ class BoogieBackend:
             "could not find the Boogie executable; set MELVIN_BOOGIE to its path"
         )
 
-    def run_raw(self, bpl_path: str, timeout: int = 120) -> subprocess.CompletedProcess:
-        cmd = [self.boogie_path, *self.extra_args, bpl_path]
+    def run_raw(self, bpl_path: str, timeout: int = 120,
+                extra: Optional[List[str]] = None) -> subprocess.CompletedProcess:
+        cmd = [self.boogie_path, *self.extra_args, *(extra or []), bpl_path]
         try:
             return subprocess.run(
                 cmd, capture_output=True, text=True, timeout=timeout
@@ -121,8 +246,14 @@ class BoogieBackend:
         emitter: Emitter,
         bpl_path: str,
         timeout: int = DEFAULT_TIMEOUT,
+        want_model: bool = False,
+        class_fields: Optional[Dict[str, Dict]] = None,
     ) -> "VerifyResult":
         """Write the emitter's program to `bpl_path`, run Boogie, map results.
+
+        With `want_model`, Boogie prints a counterexample model per error;
+        each is parsed and attached to its diagnostic as source-level rows
+        (unparseable models degrade to no counterexample, never a failure).
 
         If Boogie does not finish within `timeout` seconds it is killed and a
         result with `timed_out=True` (and `ok=False`) is returned rather than
@@ -131,7 +262,8 @@ class BoogieBackend:
         with open(bpl_path, "w") as f:
             f.write(emitter.text())
         try:
-            proc = self.run_raw(bpl_path, timeout=timeout)
+            proc = self.run_raw(bpl_path, timeout=timeout,
+                                extra=["/printModel:1"] if want_model else None)
         except subprocess.TimeoutExpired as e:
             partial = ""
             if e.stdout:
@@ -147,21 +279,42 @@ class BoogieBackend:
                 raw_output=partial,
                 timed_out=True,
             )
-        return self._interpret(proc, emitter, bpl_path)
+        return self._interpret(proc, emitter, bpl_path, class_fields)
 
-    def _interpret(self, proc, emitter: Emitter, bpl_path: str) -> "VerifyResult":
+    def _interpret(self, proc, emitter: Emitter, bpl_path: str,
+                   class_fields: Optional[Dict[str, Dict]] = None) -> "VerifyResult":
         out = (proc.stdout or "") + "\n" + (proc.stderr or "")
         diagnostics: List[Diagnostic] = []
         n_errors = 0
         verified = None
         seen_lines = set()
         base = os.path.basename(bpl_path)
+        # Boogie prints each counterexample model BEFORE the error it explains;
+        # capture blocks and attach the pending one to the next error.
+        pending_model: Optional[List[Tuple[str, str]]] = None
+        model_lines: Optional[List[str]] = None
         for raw in out.splitlines():
+            stripped = raw.strip()
+            if stripped == "*** MODEL":
+                model_lines = []
+                continue
+            if stripped == "*** END_MODEL":
+                if model_lines is not None:
+                    try:
+                        entries, funcs = _parse_model_block(model_lines)
+                        pending_model = model_table(entries, funcs, class_fields)
+                    except Exception:            # malformed model: no cex, no crash
+                        pending_model = None
+                model_lines = None
+                continue
+            if model_lines is not None:
+                model_lines.append(raw)
+                continue
             m = _SUMMARY_RE.search(raw)
             if m:
                 verified = int(m.group("verified"))
                 continue
-            m = _ERROR_RE.match(raw.strip())
+            m = _ERROR_RE.match(stripped)
             if m and (base in m.group("file") or m.group("file").endswith(".bpl")):
                 bline = int(m.group("line"))
                 if bline in seen_lines:
@@ -169,11 +322,14 @@ class BoogieBackend:
                 seen_lines.add(bline)
                 oblig = self._nearest_obligation(emitter, bline)
                 if oblig is not None:
-                    diagnostics.append(Diagnostic(oblig.span, oblig.message))
+                    diagnostics.append(Diagnostic(oblig.span, oblig.message,
+                                                  model=pending_model))
                 else:
                     diagnostics.append(
-                        Diagnostic(None, f"Boogie error at {base}({bline}): {m.group('msg')}")
+                        Diagnostic(None, f"Boogie error at {base}({bline}): {m.group('msg')}",
+                                   model=pending_model)
                     )
+                pending_model = None
                 n_errors += 1
 
         # Detect Boogie parse/type errors (no summary line, unexpected output).

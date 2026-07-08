@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
@@ -34,7 +35,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from melvin.annotate import mover_annotations
+from melvin.annotate import line_details, mover_annotations
 from melvin.boogie_backend import BoogieBackend, BoogieError
 from melvin.checker import check_source
 from melvin.diagnostics import NO_SPAN, MelvinError
@@ -157,6 +158,7 @@ def _diag_json(d) -> dict:
         "end_col": span.end.col if span else None,
         "kind": getattr(d, "kind", "error"),
         "message": d.message,
+        "model": getattr(d, "model", None),
     }
 
 
@@ -193,12 +195,14 @@ async def example(name: str):
 
 class SourceRequest(BaseModel):
     source: str
+    counterexample: bool = False
 
 
 @app.post("/api/verify")
 async def verify(req: SourceRequest, request: Request):
     _admit(request, req.source)
-    key = ("verify", hashlib.sha256(req.source.encode()).hexdigest())
+    key = ("verify", hashlib.sha256(req.source.encode()).hexdigest(),
+           bool(req.counterexample))
     cached = _cache.get(key)
     if cached is not None:
         return {**cached, "cached": True}
@@ -207,7 +211,8 @@ async def verify(req: SourceRequest, request: Request):
     async with _JobSlot():
         try:
             result = await run_in_threadpool(
-                check_source, req.source, "input.mml", timeout=VERIFY_TIMEOUT)
+                check_source, req.source, "input.mml", timeout=VERIFY_TIMEOUT,
+                counterexample=req.counterexample)
         except Exception:
             log.exception("verify: internal error (source hash %s)", key[1][:12])
             return _error_response("internal error while verifying the program")
@@ -239,15 +244,15 @@ async def verify(req: SourceRequest, request: Request):
 
 
 def _movers_json(source: str) -> list:
-    """Per-line mover letters for the editor gutter ([] if the front end
-    fails — the verify diagnostics already report why)."""
+    """Per-line mover records for the editor gutter: the letter, an
+    explanation of why, and the schematic abstract store before the line
+    ([] if the front end fails — the verify diagnostics already report why)."""
     try:
         prog = parse(source, "input.mml")
         ti = check_types(prog)
+        return line_details(prog, ti, source)
     except MelvinError:
         return []
-    ann = mover_annotations(prog, ti)
-    return [{"line": line, "effect": eff} for line, eff in sorted(ann.items())]
 
 
 def _error_response(message: str) -> dict:
@@ -302,7 +307,7 @@ async def _run_interpreter(source: str) -> dict:
     try:
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "melvin.interp", path,
-            "--max-states", str(MAX_STATES), "--trace",
+            "--max-states", str(MAX_STATES), "--json",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
         try:
             stdout, _ = await asyncio.wait_for(proc.communicate(), RUN_TIMEOUT)
@@ -317,16 +322,16 @@ async def _run_interpreter(source: str) -> dict:
 
     out = stdout.decode(errors="replace")
     status = {0: "safe", 1: "unsafe", 3: "unknown"}.get(proc.returncode, "error")
-    states = None
-    m = re.search(r"explored (\d+) states", out)
-    if m:
-        states = int(m.group(1))
-    trace = None
-    m = re.search(r"interleaving \(thread:next-step\):\s*\n\s*(.+)", out)
-    if m:
-        trace = [step.strip() for step in m.group(1).split("->")]
-    return {"status": status, "states": states, "trace": trace,
-            "message": out.splitlines()[0] if out else "", "diagnostics": []}
+    try:
+        data = json.loads(out)
+    except ValueError:
+        data = {}
+    return {"status": data.get("result", status),
+            "states": data.get("states"),
+            "trace": data.get("trace"),
+            "finals": data.get("finals"),
+            "finals_complete": data.get("finals_complete", True),
+            "message": data.get("message", ""), "diagnostics": []}
 
 
 # ------------------------------------------------------------------ static UI
