@@ -692,24 +692,45 @@ class Lowerer:
         elif kind == "read":
             self.snapshot("pre", scope, only_globals=True)
             self._emit_mover(gvar, "read", scope, s.span, "read")
-            self.em.line(f"v_{s.lhs} := v_{gvar};")
+            self._assign_local(s.lhs, f"v_{gvar}")
         elif kind == "fieldread":
             cls, fld = gvar.split(".", 1)
             recv = self._capture_recv(s.rhs.base, cls, scope, s.span, "field read")
             self.snapshot("pre", scope, only_globals=True)
             self._emit_field_mover(cls, fld, "read", scope, recv, s.span, "read")
-            self.em.line(f"v_{s.lhs} := v_{fmap_name(cls, fld)}[{recv}];")
+            self._assign_local(s.lhs, f"v_{fmap_name(cls, fld)}[{recv}]")
         elif kind == "new":
             self.emit_new(s, gvar, ctx)
         elif kind == "elemread":
             at = gvar
             aref, aidx = self._emit_elem_access(
                 at, "read", s.rhs.base, s.rhs.index, scope, s.span, "element read")
-            self.em.line(f"v_{s.lhs} := v_{arr_elems_name(at)}[{aref}][{aidx}];")
+            self._assign_local(s.lhs, f"v_{arr_elems_name(at)}[{aref}][{aidx}]")
         elif kind == "newarray":
             self.emit_new_array(s, ctx)
         else:  # local computation: both-mover, no effect change
-            self.em.line(f"v_{s.lhs} := {self.tr.tr(s.rhs, cur, cur)};")
+            self._assign_local(s.lhs, rhs_ast=s.rhs, cur=cur)
+
+    def _assign_local(self, lhs: str, rhs_boogie: Optional[str] = None,
+                      rhs_ast: "A.Expr" = None,
+                      cur: Optional[Dict[str, str]] = None) -> None:
+        """Assign to a thread-local via `havoc; assume` rather than a direct
+        `:=`.  This is logically identical to the assignment (havoc then pin to
+        the exact value), but makes the local a named model constant so it shows
+        up in a counterexample store -- Boogie prunes locals defined by a plain
+        deterministic `:=` from its models.
+
+        For an AST right-hand side we first snapshot the pre-value into `pre_lhs`
+        and translate against it, so a self-referential RHS (`t = t + n`) reads
+        the old value rather than the just-havocked one.  (Doing this
+        unconditionally keeps the assignment sound regardless of the RHS shape.)
+        """
+        if rhs_ast is not None:
+            self.em.line(f"pre_{lhs} := v_{lhs};")
+            cur2 = dict(cur); cur2[lhs] = f"pre_{lhs}"
+            rhs_boogie = self.tr.tr(rhs_ast, cur2, cur2)
+        self.em.line(f"havoc v_{lhs};")
+        self.em.line(f"assume v_{lhs} == {rhs_boogie};")
 
     def emit_new(self, s: A.Assign, cls: str, ctx: "_Ctx") -> None:
         """`x = new C`: pick an unallocated non-null reference, mark it
