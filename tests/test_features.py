@@ -153,6 +153,60 @@ def test_no_finals_flag(capsys):
     assert "final store" not in out
 
 
+# --------------------------------------------- F4: Boogie counterexamples
+
+BAD_POST = """
+var int x  both-mover if m == tid;
+lock m  write right-mover if \\old(m) == 0 && m == tid
+        write left-mover  if \\old(m) == tid && m == 0;
+atomic
+ensures  x == \\old(x) + 1
+inc() {
+  acquire(m); t = x; t = t + 2; x = t; release(m);
+}
+thread { inc(); }
+"""
+
+
+@needs_boogie
+def test_counterexample_attached_on_request():
+    res = check_source(BAD_POST, "bad.mml", counterexample=True)
+    assert not res.ok
+    d = res.diagnostics[0]
+    assert d.model, "expected counterexample rows"
+    names = [n for n, _v in d.model]
+    assert "tid" in names and "eff" in names
+    assert any(n == "x" for n in names)
+
+
+@needs_boogie
+def test_no_counterexample_by_default():
+    res = check_source(BAD_POST, "bad.mml")
+    assert not res.ok
+    assert res.diagnostics[0].model is None
+
+
+@needs_boogie
+def test_counterexample_rendered():
+    res = check_source(BAD_POST, "bad.mml", counterexample=True)
+    out = res.render()
+    assert "counterexample:" in out
+    assert "eff = " in out
+
+
+def test_model_table_mapping():
+    from melvin.boogie_backend import model_table, _parse_model_block
+    block = ["tid -> 1", "eff@0 -> 2", "eff@1 -> 4", "v_x -> (- 2)",
+             "v_t@0 -> 0", "o_x -> (- 2)", "Nil -> T@List!val!0",
+             "cons -> {", "  else -> T@List!val!0", "}"]
+    rows = dict(model_table(_parse_model_block(block)))
+    assert rows["tid"] == "1"
+    assert rows["eff"] == "N"          # highest incarnation, decoded
+    assert rows["x"] == "-2"
+    assert rows["t"] == "0"
+    assert "\\old(x)" not in rows      # equal to current value, so elided
+
+
 def test_finals_in_json(capsys):
     run_main([str(EXAMPLES / "oracle_safe.mml"), "--json"])
     out = json.loads(capsys.readouterr().out)

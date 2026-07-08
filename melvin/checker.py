@@ -43,6 +43,7 @@ def check_source(
     boogie_path: Optional[str] = None,
     keep_bpl: Optional[str] = None,
     timeout: int = DEFAULT_TIMEOUT,
+    counterexample: bool = False,
 ) -> CheckResult:
     source_lines = source.splitlines()
     # -- front end: parse + type-check + lower (may raise MelvinError) ----
@@ -70,7 +71,8 @@ def check_source(
 
     try:
         backend = BoogieBackend(boogie_path=boogie_path)
-        result = backend.verify(emitter, bpl_path, timeout=timeout)
+        result = backend.verify(emitter, bpl_path, timeout=timeout,
+                                want_model=counterexample)
     finally:
         if not keep_bpl and os.path.exists(bpl_path):
             os.remove(bpl_path)

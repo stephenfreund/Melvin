@@ -158,6 +158,7 @@ def _diag_json(d) -> dict:
         "end_col": span.end.col if span else None,
         "kind": getattr(d, "kind", "error"),
         "message": d.message,
+        "model": getattr(d, "model", None),
     }
 
 
@@ -194,12 +195,14 @@ async def example(name: str):
 
 class SourceRequest(BaseModel):
     source: str
+    counterexample: bool = False
 
 
 @app.post("/api/verify")
 async def verify(req: SourceRequest, request: Request):
     _admit(request, req.source)
-    key = ("verify", hashlib.sha256(req.source.encode()).hexdigest())
+    key = ("verify", hashlib.sha256(req.source.encode()).hexdigest(),
+           bool(req.counterexample))
     cached = _cache.get(key)
     if cached is not None:
         return {**cached, "cached": True}
@@ -208,7 +211,8 @@ async def verify(req: SourceRequest, request: Request):
     async with _JobSlot():
         try:
             result = await run_in_threadpool(
-                check_source, req.source, "input.mml", timeout=VERIFY_TIMEOUT)
+                check_source, req.source, "input.mml", timeout=VERIFY_TIMEOUT,
+                counterexample=req.counterexample)
         except Exception:
             log.exception("verify: internal error (source hash %s)", key[1][:12])
             return _error_response("internal error while verifying the program")

@@ -71,6 +71,9 @@ class Diagnostic:
     message: str
     kind: str = "error"          # "error" | "warning" | "note"
     related: List["Diagnostic"] = field(default_factory=list)
+    # Source-level counterexample rows [(name, value), ...] mapped from the
+    # Boogie model, present only when model printing was requested.
+    model: Optional[List] = None
 
     def render(self, source_lines: Optional[List[str]] = None) -> str:
         loc = f"{self.span}: " if self.span else ""
@@ -80,6 +83,10 @@ class Diagnostic:
             if 1 <= ln <= len(source_lines):
                 out += "\n    " + source_lines[ln - 1].rstrip("\n")
                 out += "\n    " + " " * (self.span.start.col - 1) + "^"
+        if self.model:
+            out += "\n    counterexample:"
+            for name, value in self.model:
+                out += f"\n      {name} = {value}"
         for r in self.related:
             out += "\n  " + r.render()
         return out
