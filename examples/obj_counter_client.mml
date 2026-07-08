@@ -1,0 +1,45 @@
+// Object counter with a non-atomic client whose rely/guarantee quantify over
+// all Counter objects: interference may change any counter, but preserves
+// evenness of every counter's x field.
+//
+// This is the object-logic analogue of counter.mml's client: the client keeps
+// even(c.x) across its yields purely from the quantified rely, even though it
+// cannot know which counters other threads touch.
+
+class Counter {
+  var int x   both-mover if this.m == tid;
+
+  lock m  write right-mover if \old(this.m) == 0 && this.m == tid
+          write left-mover  if \old(this.m) == tid && this.m == 0
+          read  both-mover  if this.m == tid;
+
+  atomic
+  requires true
+  ensures  this.x == \old(this.x) + n && result == this.x && this.m == \old(this.m)
+  add(int n) {
+    acquire(this.m);
+    t = this.x;
+    t = t + n;
+    this.x = t;
+    result = t;
+    release(this.m);
+  }
+}
+
+relies     forall c : Counter . (even(\old(c.x)) ==> even(c.x))
+guarantees forall c : Counter . (even(\old(c.x)) ==> even(c.x))
+requires   true
+ensures    true
+client() {
+  yield;
+  c = new Counter;      // c.x == 0: even
+  r = c.add(2);
+  assert even(r);
+  yield;                // interference must keep c.x even
+  r = c.add(2);
+  assert even(r);       // holds because \old(c.x) was even across the yield
+  yield;
+}
+
+thread { client(); }
+thread { client(); }

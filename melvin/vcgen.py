@@ -177,6 +177,9 @@ class Lowerer:
                 self.heap_types[fmap_name(cname, fld)] = f"[{cname}]{ft}"
         # Per-call-site spec-substitution temps, filled by _scan_temps.
         self.call_binds: Dict[int, Dict[str, Tuple[str, str]]] = {}
+        # Per-call-site point-havoc frame: [(value temp, field map)] when the
+        # callee only writes the heap through `this` (see _writes_only_this).
+        self.call_frame: Dict[int, List[Tuple[str, str]]] = {}
 
     # ------------------------------------------------------------------ util
     def shared_list(self) -> List[str]:
@@ -398,6 +401,16 @@ class Lowerer:
                     for name, bt in binds.values():
                         decls[name] = bt
                     self.call_binds[id(st)] = binds
+                    if callee.cls is not None and self._writes_only_this(callee):
+                        frame = []
+                        written = set(self._callee_shared_writes(callee))
+                        for j, fld in enumerate(sorted(self.ti.classes[callee.cls])):
+                            fm = fmap_name(callee.cls, fld)
+                            if fm in written:
+                                tmp = f"cs{k}_hv{j}"
+                                decls[tmp] = self.ti.classes[callee.cls][fld]
+                                frame.append((tmp, fm))
+                        self.call_frame[id(st)] = frame
                 elif isinstance(st, A.If):
                     scan_cond(st.cond)
                     scan(st.then_body); scan(st.else_body)
@@ -947,6 +960,8 @@ class Lowerer:
                 self.em.line(f"{tmp} := {self.tr.tr(s.args[idx], cur, cur)};")
         sub = {name: tmp for name, (tmp, _bt) in binds.items()}
         cur_b = {**cur, **sub}
+        frame = self.call_frame.get(id(s))
+        recv_tmp = sub.get("this")
         # snapshot call entry for the callee's \old
         self.snapshot("ce", scope)
         if callee.is_atomic:
@@ -955,7 +970,7 @@ class Lowerer:
                 self.tr.tr(spec.requires, cur_b, cur_b), s.span,
                 f"precondition of atomic {target}() may not hold at this call",
             )
-            self._havoc_callee_effects(callee, scope)
+            self._havoc_callee_effects(callee, scope, frame, recv_tmp)
             old_b = {**self.snap_map(scope, "ce"), **sub}
             self.em.line(f"assume {self.tr.tr(spec.ensures, cur_b, old_b)};")
             self.em.line(f"eff := seqEff(eff, {EFF_CODE[spec.mover.name]});")
@@ -968,7 +983,7 @@ class Lowerer:
                 self.tr.tr(spec.requires, cur_b, cur_b), s.span,
                 f"precondition of {target}() may not hold at this call",
             )
-            self._havoc_callee_effects(callee, scope)
+            self._havoc_callee_effects(callee, scope, frame, recv_tmp)
             self.em.line(f"assume {self.tr.tr(spec.ensures, cur_b, cur_b)};")
             self.restore_seq_start(scope)
             self.em.line(f"eff := seqEff(eff, {R_CODE});")
@@ -977,13 +992,75 @@ class Lowerer:
         if s.assign_to is not None and s.assign_to != "result":
             self.em.line(f"v_{s.assign_to} := v_result;")
 
-    def _havoc_callee_effects(self, callee: A.FnDecl, caller_scope: str) -> None:
+    def _writes_only_this(self, callee: A.FnDecl, seen: Optional[Set[str]] = None) -> bool:
+        """True iff every heap write the callee performs (transitively) goes
+        through the receiver `this` of its own class, and it allocates nothing.
+        Such a callee can be framed precisely at a call site: only the
+        receiver's entries in its class's field maps need havocking."""
+        if seen is None:
+            seen = {callee.name}
+
+        def is_this(e: A.Expr) -> bool:
+            return isinstance(e, A.Var) and e.name == "this"
+
+        def ok(stmts: List[A.Stmt]) -> bool:
+            for st in stmts:
+                if isinstance(st, A.Assign):
+                    kind, _ = self.ti.assign_kind[id(st)]
+                    if kind == "new":
+                        return False
+                elif isinstance(st, A.FieldWrite):
+                    if not is_this(st.base):
+                        return False
+                elif isinstance(st, (A.Acquire, A.Release)):
+                    if st.lock_expr is not None and not is_this(st.lock_expr.base):
+                        return False
+                elif isinstance(st, (A.If, A.While)):
+                    c = _unwrap_not(st.cond)
+                    if isinstance(c, A.CasCond) and c.target_expr is not None \
+                            and not is_this(c.target_expr.base):
+                        return False
+                    bodies = ([st.then_body, st.else_body]
+                              if isinstance(st, A.If) else [st.body])
+                    if not all(ok(b) for b in bodies):
+                        return False
+                elif isinstance(st, A.Call_):
+                    target = self.ti.call_target.get(id(st), st.name)
+                    inner = self.prog.find_func(target)
+                    if inner is None:
+                        continue
+                    if st.receiver is None:
+                        # a plain function is fine only if it touches no heap
+                        if any(g in self.heap_types
+                               for g in self._callee_shared_writes(inner)):
+                            return False
+                    elif not is_this(st.receiver):
+                        return False
+                    elif target not in seen:
+                        seen.add(target)
+                        if not self._writes_only_this(inner, seen):
+                            return False
+            return True
+
+        return ok(callee.body)
+
+    def _havoc_callee_effects(self, callee: A.FnDecl, caller_scope: str,
+                              frame: Optional[List[Tuple[str, str]]] = None,
+                              recv_tmp: Optional[str] = None) -> None:
         # Havoc exactly the shared items the callee writes (transitively,
         # through nested calls) and the locals it assigns.  (Mover Logic omits
         # frame conditions, so callee ensures must pin what matters; we havoc
         # writes and let the ensures constrain them.)
+        framed = {fm for _tmp, fm in (frame or [])}
         for g in self._callee_shared_writes(callee):
+            if g in framed:
+                continue
             self.em.line(f"havoc v_{g};")
+        # a callee that writes the heap only through `this` disturbs exactly
+        # the receiver's entries: havoc those points, not the whole maps
+        for tmp, fm in (frame or []):
+            self.em.line(f"havoc {tmp};")
+            self.em.line(f"v_{fm} := v_{fm}[{recv_tmp} := {tmp}];")
         caller_items = set(self.store_items(caller_scope))
         param_names = {p.name for p in callee.params} | {"this"}
         for l in self._callee_local_writes(callee):
@@ -1053,6 +1130,20 @@ class Lowerer:
                 self._validity_commute(1, xw, yw)
                 self._validity_commute(2, xw, yw)
                 self._validity_commute(4, xw, yw)
+        # Field specs.  Guards may only dereference `this` and may not mention
+        # scalar globals, so cross-class and field/global pairs commute
+        # structurally; the interesting cases are within one class -- two
+        # accesses through possibly-aliasing receivers.
+        for c in self.prog.classes:
+            for xw in c.fields:
+                for yv in c.fields:
+                    self._field_validity3(c, xw, yv)
+            fwritable = [fd for fd in c.fields
+                         if self._field_clauses(c.name, fd.name, "write")]
+            for xw in fwritable:
+                self._field_validity_commute(1, c, xw)
+                self._field_validity_commute(2, c, xw)
+                self._field_validity_commute(4, c, xw)
 
     def _validity_commute(self, num: int, xw: A.VarDecl, yw: A.VarDecl) -> None:
         """Emit conditions (1), (2), or (4) for the write-pair (X by t, Y by u).
@@ -1124,6 +1215,115 @@ class Lowerer:
     def _cond_name(num: int) -> str:
         return {1: "right-mover write", 2: "non-mover write",
                 4: "non-mover write"}[num]
+
+    # ---- field-spec validity: two accesses through possibly-aliased receivers
+    def _field_store_dicts(self) -> Dict[str, str]:
+        return {g: f"s_{g}" for g in self.shared_list()}
+
+    def _emit_field_validity_header(self, name: str, cls: str, vtypes: List[str]) -> None:
+        self.em.line(f"procedure {{:entrypoint}} {name}()")
+        self.em.line("{")
+        self.em.indent()
+        for g, bt in self.shared_types():
+            self.em.line(f"var s_{g}: {bt};")
+        self.em.line(f"var o1: {cls}; var o2: {cls};")
+        for i, vt in enumerate(vtypes, 1):
+            self.em.line(f"var v{i}: {vt};")
+        self.em.line("var t: int; var u: int;")
+        self.em.line("assume t > 0 && u > 0 && t != u;")
+        self.em.line(f"assume o1 != {null_name(cls)} && o2 != {null_name(cls)};")
+
+    def _field_validity_commute(self, num: int, c: A.ClassDecl, xw: A.VarDecl) -> None:
+        """Conditions (1), (2), (4) for two writes to the same field X of class
+        C through receivers o1 (thread t) and o2 (thread u), which may alias.
+        For o1 != o2 the map updates commute structurally; for o1 == o2 the
+        assertion forces the two writes to agree, exactly as in the scalar
+        case."""
+        cls = c.name
+        X = xw.name
+        fmX = fmap_name(cls, X)
+        xty = self.ti.classes[cls][X]
+        xwrite = self._field_clauses(cls, X, "write")
+        sigma = self._field_store_dicts()
+
+        upd1 = f"s_{fmX}[o1 := v1]"                 # sigma'  = sigma[o1.X := v1]
+        upd12 = f"{upd1}[o2 := v2]"                 # sigma'' = sigma'[o2.X := v2]
+        upd2 = f"s_{fmX}[o2 := v2]"
+        upd21 = f"{upd2}[o1 := v1]"
+
+        def m(tv: str, this: str, cur_map: str, old_map: str) -> str:
+            cur = {**sigma, fmX: cur_map, "tid": tv, "this": this}
+            old = {**sigma, fmX: old_map, "tid": tv, "this": this}
+            return self._mover_ite(xwrite, cur, old)
+
+        moverX_t = m("t", "o1", upd1, f"s_{fmX}")   # M(A1, t, sigma)
+        if num == 1:
+            h1 = f"leqEff({moverX_t}, {R_CODE})"
+            h2 = f"leqEff({m('u', 'o2', upd12, upd1)}, {N_CODE})"   # M(A2,u,sigma')<=N
+        elif num == 2:
+            h1 = f"leqEff({moverX_t}, {N_CODE})"
+            h2 = f"leqEff({m('u', 'o2', upd12, upd1)}, {L_CODE})"   # M(A2,u,sigma')<=L
+        else:  # num == 4
+            h1 = f"leqEff({moverX_t}, {N_CODE})"
+            h2 = f"leqEff({m('u', 'o2', upd2, f's_{fmX}')}, {L_CODE})"  # M(A2,u,sigma)<=L
+
+        self.em.blank()
+        self.em.line(f"// validity({num}): writes to field {cls}.{X} by t (o1) "
+                     f"and u (o2) commute")
+        self._emit_field_validity_header(f"FValid{num}_{cls}_{X}", cls, [xty, xty])
+        self.em.line(f"assume {h1};")
+        self.em.line(f"assume {h2};")
+        self.em.assert_(
+            f"({upd12}[o1] == {upd21}[o1]) && ({upd12}[o2] == {upd21}[o2])",
+            xw.span,
+            f"invalid mover specification: a {self._cond_name(num)} to field "
+            f"{X!r} by one thread and a write by another (possibly through an "
+            f"aliased receiver) do not commute (validity condition {num} fails)",
+        )
+        self.em.dedent()
+        self.em.line("}")
+
+    def _field_validity3(self, c: A.ClassDecl, xw: A.VarDecl, yv: A.VarDecl) -> None:
+        """Condition (3) for fields: a write to o1.X by thread t must not
+        change the mover thread u computes for an access to o2.Y (o1 and o2
+        may alias)."""
+        cls = c.name
+        xw_write = [cl for cl in xw.clauses if cl.index is None
+                    and cl.access in (None, "write")]
+        if not xw_write:
+            return
+        fmX = fmap_name(cls, xw.name)
+        xty = self.ti.classes[cls][xw.name]
+        sigma = self._field_store_dicts()
+        upd1 = f"s_{fmX}[o1 := v1]"
+
+        def mover_of_y(access: str, fmX_val: str) -> str:
+            clauses = [cl for cl in yv.clauses if cl.index is None
+                       and cl.access in (None, access)]
+            cur = {**sigma, fmX: fmX_val, "tid": "u", "this": "o2"}
+            return self._mover_ite(clauses, cur, cur)
+
+        # t's own write must be well-defined (!= E) for this step
+        wcur = {**sigma, fmX: upd1, "tid": "t", "this": "o1"}
+        wold = {**sigma, "tid": "t", "this": "o1"}
+        wexpr = self._mover_ite(xw_write, wcur, wold)
+
+        self.em.blank()
+        self.em.line(f"// validity(3): a write to {cls}.{xw.name} by t keeps "
+                     f"{cls}.{yv.name}'s mover for u")
+        self._emit_field_validity_header(f"FValid3_{cls}_{xw.name}_{yv.name}", cls, [xty])
+        self.em.line(f"assume {wexpr} != {E_CODE};")
+        for access in ("read", "write"):
+            y_before = mover_of_y(access, f"s_{fmX}")
+            y_after = mover_of_y(access, upd1)
+            self.em.assert_(
+                f"({y_before}) == ({y_after})", yv.span,
+                f"invalid mover specification: a write to field {xw.name!r} by "
+                f"one thread can change the {access} mover of field {yv.name!r} "
+                f"for another thread (validity condition 3 fails)",
+            )
+        self.em.dedent()
+        self.em.line("}")
 
     def _validity3(self, xw: A.VarDecl, yv: A.VarDecl) -> None:
         gl = list(self.ti.globals.keys())

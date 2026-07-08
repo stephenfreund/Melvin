@@ -269,6 +269,98 @@ def test_untyped_null_receiver_is_type_error():
 
 
 @needs_boogie
+def test_quantified_rely_client_verifies():
+    src = (EXAMPLES / "obj_counter_client.mml").read_text()
+    assert check_source(src, "obj_counter_client.mml").ok
+
+
+@needs_boogie
+def test_quantified_rely_client_needs_even_rely():
+    src = (EXAMPLES / "obj_counter_client.mml").read_text().replace(
+        "relies     forall c : Counter . (even(\\old(c.x)) ==> even(c.x))",
+        "relies     true")
+    res = check_source(src, "m.mml")
+    assert not res.ok
+
+
+@needs_boogie
+def test_field_validity3_rejects_data_dependent_mover():
+    src = ("class C { var int x  both-mover if this.x == 0; }\n"
+           "atomic requires c != null ensures true f(C c) { t = c.x; }\n")
+    res = check_source(src, "v3.mml")
+    assert not res.ok
+    assert any("validity condition 3" in d.message for d in res.diagnostics)
+
+
+@needs_boogie
+def test_field_validity_commute_rejects_racy_both_mover():
+    src = ("class C { var int x  both-mover; }\n"
+           "atomic requires c != null ensures true f(C c) { c.x = 1; }\n")
+    res = check_source(src, "vc.mml")
+    assert not res.ok
+    assert any("validity condition" in d.message for d in res.diagnostics)
+
+
+@needs_boogie
+def test_lock_discipline_field_spec_no_false_positive():
+    # the per-object lock discipline must pass all field validity conditions
+    res = check_source(COUNTER, "obj_counter.mml")
+    assert res.ok, res.render()
+
+
+@needs_boogie
+def test_nontransitive_quantified_rely_rejected():
+    src = ("class C { var int x  non-mover; }\n"
+           "relies forall c : C . c.x <= \\old(c.x) + 1\n"
+           "guarantees true\nrequires true ensures true f() { yield; }\n"
+           "thread { f(); }\n")
+    res = check_source(src, "rt.mml")
+    assert not res.ok
+    assert any("not transitive" in d.message for d in res.diagnostics)
+
+
+@needs_boogie
+def test_quantified_guarantee_must_imply_rely():
+    src = ("class C { var int x  non-mover; }\n"
+           "relies forall c : C . \\old(c.x) == c.x\n"
+           "guarantees true\nrequires true ensures true f() { yield; }\n"
+           "thread { f(); }\nthread { f(); }\n")
+    res = check_source(src, "gr.mml")
+    assert not res.ok
+    assert any("G_t => R_u" in d.message for d in res.diagnostics)
+
+
+@needs_boogie
+def test_method_call_frames_other_objects():
+    # calling set1() on `a` must not clobber `b`'s state: the callee writes
+    # the heap only through `this`, so the call site havocs just a's entry
+    src = """
+class C {
+  var int x  non-mover;
+  atomic requires true ensures this.x == 1 set1() { this.x = 1; }
+}
+relies     forall c : C . \\old(c.x) == c.x
+guarantees true
+requires   true
+ensures    true
+f() {
+  yield;
+  a = new C;
+  b = new C;
+  b.x = 7;
+  yield;
+  a.set1();
+  yield;
+  t = b.x;
+  assert t == 7;
+  yield;
+}
+"""
+    res = check_source(src, "frame.mml")
+    assert res.ok, res.render()
+
+
+@needs_boogie
 def test_null_receiver_rejected():
     src = """
 class C { var int x  non-mover; }

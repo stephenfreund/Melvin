@@ -22,6 +22,7 @@ VERIFYING = [
     "nonatomic_two_yields.mml",
     "atomic_calls_atomic.mml",
     "obj_counter.mml",
+    "obj_counter_client.mml",
 ]
 
 # Programs that must be rejected, with a substring expected in some diagnostic.
