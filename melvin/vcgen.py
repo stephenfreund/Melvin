@@ -225,6 +225,51 @@ class Lowerer:
             items.append("result")
         return items
 
+    def _display_names(self, f: A.FnDecl) -> frozenset:
+        """Source-level names shown in a counterexample for function `f`: the
+        globals plus `f`'s own locals (which include its parameters and `this`).
+        `result` is the callee return channel and is present in the encoding of
+        any function that calls another, but is only meaningful -- and only
+        shown -- where `f` itself uses it (assigns it or names it in a spec)."""
+        names = set(self.ti.globals.keys())
+        names.update(self.ti.scope_locals(f"fn:{f.name}").keys())
+        if self._uses_result(f):
+            names.add("result")
+        return frozenset(names)
+
+    @staticmethod
+    def _uses_result(f: A.FnDecl) -> bool:
+        def in_expr(e) -> bool:
+            if e is None:
+                return False
+            if isinstance(e, A.Result):
+                return True
+            for c in vars(e).values():
+                if isinstance(c, A.Expr) and in_expr(c):
+                    return True
+                if isinstance(c, list) and any(
+                        isinstance(x, A.Expr) and in_expr(x) for x in c):
+                    return True
+            return False
+
+        for attr in ("requires", "ensures", "relies", "guarantees"):
+            if in_expr(getattr(f.spec, attr, None)):
+                return True
+
+        def in_stmts(stmts) -> bool:
+            for s in stmts:
+                if isinstance(s, A.Assign) and s.lhs == "result":
+                    return True
+                if isinstance(s, A.Call_) and getattr(s, "assign_to", None) == "result":
+                    return True
+                if isinstance(s, A.If) and (in_stmts(s.then_body) or in_stmts(s.else_body)):
+                    return True
+                if isinstance(s, A.While) and in_stmts(s.body):
+                    return True
+            return False
+
+        return in_stmts(f.body)
+
     def btype(self, name: str, scope: str) -> str:
         if name in self.ti.globals:
             return self.ti.globals[name]
@@ -515,10 +560,14 @@ class Lowerer:
     # -------------------------------------------------------------- programs
     def lower(self) -> Emitter:
         for f in self.prog.funcs:
+            self.em.scope_names = self._display_names(f)
             if f.is_atomic:
                 self.gen_atomic_fn(f)
             else:
                 self.gen_nonatomic_fn(f)
+        # the validity/state/rely procedures are not tied to a user function
+        # body, so leave their obligations unrestricted.
+        self.em.scope_names = None
         self.gen_validity()
         self.gen_state_checks()
         self.gen_rely_checks()
@@ -749,7 +798,7 @@ class Lowerer:
                 self.em.line(f"v_{fm} := v_{fm}[{ref} := {d}];")
             # types without a canonical default start unconstrained: the map
             # value at a never-allocated index was never pinned by anyone
-        self.em.line(f"v_{s.lhs} := {ref};")
+        self._assign_local(s.lhs, ref)
 
     def emit_new_array(self, s: A.Assign, ctx: "_Ctx") -> None:
         """`x = new T[n]`: pick a fresh unallocated array reference and fix its
@@ -768,7 +817,7 @@ class Lowerer:
         self.em.line(f"v_{am} := v_{am}[{ref} := true];")
         lm = arr_len_name(at)
         self.em.line(f"v_{lm} := v_{lm}[{ref} := {size}];")
-        self.em.line(f"v_{s.lhs} := {ref};")
+        self._assign_local(s.lhs, ref)
 
     def emit_array_write(self, s: A.ArrayWrite, ctx: "_Ctx") -> None:
         scope = ctx.scope
@@ -1198,7 +1247,7 @@ class Lowerer:
             self.em.assert_(f"eff != {E_CODE}", s.span,
                             f"call to {target}() breaks reducibility here")
         if s.assign_to is not None and s.assign_to != "result":
-            self.em.line(f"v_{s.assign_to} := v_result;")
+            self._assign_local(s.assign_to, "v_result")
 
     def _writes_only_this(self, callee: A.FnDecl, seen: Optional[Set[str]] = None) -> bool:
         """True iff every heap write the callee performs (transitively) goes
