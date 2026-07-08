@@ -18,7 +18,7 @@ KEYWORDS = {
     "int", "bool", "lock_t", "value",
     "forall", "exists", "in",
     "head", "tail", "Nil", "None", "Some", "even",
-    "class", "new", "null", "this",
+    "class", "new", "null", "this", "guarded_by",
 }
 
 # Multi-character operators, longest first.

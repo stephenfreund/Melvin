@@ -42,6 +42,15 @@ EXAMPLES = [
     {"name": "assert_pass.mml", "title": "Assertion (holds)",
      "blurb": "An assertion the verifier proves.",
      "group": GROUP_VERIFIES},
+    {"name": "obj_counter.mml", "title": "Object counter",
+     "blurb": "A Counter class with a per-object lock field guarding its state.",
+     "group": GROUP_VERIFIES},
+    {"name": "obj_counter_client.mml", "title": "Object counter, client",
+     "blurb": "Rely/guarantee quantified over every Counter object.",
+     "group": GROUP_VERIFIES},
+    {"name": "obj_array.mml", "title": "Heap array",
+     "blurb": "Per-element movers: slot i of the array belongs to thread i.",
+     "group": GROUP_VERIFIES},
 
     # -- programs the verifier rejects, each with a distinct diagnostic ---
     {"name": "racy_bad.mml", "title": "Data race",
@@ -62,6 +71,9 @@ EXAMPLES = [
     {"name": "rely_not_reflexive.mml", "title": "Non-reflexive rely",
      "blurb": "A strictly-increasing rely that excludes the no-interference step.",
      "group": GROUP_REJECTED},
+    {"name": "obj_racy_bad.mml", "title": "Object data race",
+     "blurb": "A field written without holding its per-object lock.",
+     "group": GROUP_REJECTED},
 
     # -- programs meant for the Run (interpreter) button -------------------
     {"name": "oracle_safe.mml", "title": "Oracle: safe",
@@ -69,6 +81,12 @@ EXAMPLES = [
      "group": GROUP_INTERP},
     {"name": "oracle_unsafe.mml", "title": "Oracle: unsafe",
      "blurb": "Press Run: some interleaving reaches `wrong` — see the trace.",
+     "group": GROUP_INTERP},
+    {"name": "obj_oracle_safe.mml", "title": "Oracle: objects, safe",
+     "blurb": "A shared Cell object updated under its lock — exhaustively safe.",
+     "group": GROUP_INTERP},
+    {"name": "obj_oracle_unsafe.mml", "title": "Oracle: objects, unsafe",
+     "blurb": "A published object whose reader asserts the wrong value.",
      "group": GROUP_INTERP},
 ]
 

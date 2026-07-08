@@ -167,23 +167,57 @@ class Parser:
         start = self.expect("var").span
         ty = self.parse_type()
         name = self.expect_kind("id", "variable name").text
-        clauses = self.parse_mover_clauses()
+        clauses = self.parse_mover_clauses(owner)
         end = self.expect(";").span
         return A.VarDecl(name, ty, False, clauses, Span.merge(start, end), owner=owner)
 
     def parse_lock_decl(self, owner: Optional[str] = None) -> A.VarDecl:
         start = self.expect("lock").span
         name = self.expect_kind("id", "lock name").text
-        clauses = self.parse_mover_clauses()
+        clauses = self.parse_mover_clauses(owner)
         end = self.expect(";").span
-        return A.VarDecl(name, A.TypeExpr("lock_t"), True, clauses,
-                         Span.merge(start, end), owner=owner)
+        span = Span.merge(start, end)
+        if not clauses:
+            # `lock m;` defaults to the standard mutex discipline
+            clauses = self._default_lock_clauses(name, owner, span)
+        return A.VarDecl(name, A.TypeExpr("lock_t"), True, clauses, span,
+                         owner=owner)
 
-    def parse_mover_clauses(self) -> List[A.MoverClause]:
+    def _lock_ref(self, lname: str, owner: Optional[str], span: Span) -> A.Expr:
+        if owner is None:
+            return A.Var(lname, span)
+        return A.FieldAccess(A.Var("this", span), lname, span)
+
+    def _default_lock_clauses(self, name: str, owner: Optional[str],
+                              span: Span) -> List[A.MoverClause]:
+        """acquire (0 -> tid) is a right-mover, release (tid -> 0) a
+        left-mover, and the holder may read the lock."""
+        l = lambda: self._lock_ref(name, owner, span)
+        zero = lambda: A.Num(0, span)
+        tid = lambda: A.Tid(span)
+        eq = lambda a, b: A.Binary("==", a, b, span)
+        conj = lambda a, b: A.Binary("&&", a, b, span)
+        return [
+            A.MoverClause("write", None, Effect.R,
+                          conj(eq(A.Old(l(), span), zero()), eq(l(), tid())), span),
+            A.MoverClause("write", None, Effect.L,
+                          conj(eq(A.Old(l(), span), tid()), eq(l(), zero())), span),
+            A.MoverClause("read", None, Effect.B, eq(l(), tid()), span),
+        ]
+
+    def parse_mover_clauses(self, owner: Optional[str] = None) -> List[A.MoverClause]:
         clauses: List[A.MoverClause] = []
         while True:
             index = None
             access = None
+            if self.at("guarded_by"):
+                # sugar: both-mover while the named lock is held
+                start = self.advance().span
+                lname = self.expect_kind("id", "lock name").text
+                guard = A.Binary("==", self._lock_ref(lname, owner, start),
+                                 A.Tid(start), start)
+                clauses.append(A.MoverClause(None, None, Effect.B, guard, start))
+                continue
             if self.at("["):
                 self.advance()
                 index = self.expect_kind("id", "index variable").text

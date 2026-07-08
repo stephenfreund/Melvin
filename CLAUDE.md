@@ -59,6 +59,47 @@ shells out to the executable.
   condition (`_loop_iter_static`).
 * Error messages are attached at `Emitter.assert_`; keep them source-accurate.
 
+### Objects and the heap (the `objects` extension)
+
+The language has Anchor-style classes: fields with mover clauses whose guards
+may mention `this`, `this`'s fields, and `tid` (nothing else — this is what
+keeps validity checking tractable), per-object `lock` fields, methods with an
+implicit immutable `this` and immutable parameters, `new C`, `null`, and heap
+arrays. Key encoding decisions (all in `vcgen.py`):
+
+* Each class C contributes **shared store items**: one map per field
+  (`f_C_fld: [C]T`) and an allocation set (`alloc_C: [C]bool`). A whole map is
+  just another store item, so all `v_/o_/pre_/py_/ce_` snapshot machinery,
+  yield havoc, and `\old` translation apply unchanged (whole-map assignment).
+* Field accesses capture the receiver in a per-class temp (`recv_C`), assert
+  it non-null, and evaluate the field's clauses with `this` bound to it.
+  `new` picks a fresh unallocated reference and resets fields to defaults;
+  allocation sets grow monotonically under interference (`_builtin_rely`).
+* Method calls substitute call-entry temps (`cs<k>_this`, `cs<k>_a<i>`) for
+  `this`/parameters in the callee spec. Callee havoc is field-granular and
+  transitive through nested calls (`_shared_writes`); when the callee writes
+  the heap only through `this` (`_writes_only_this`), only the *receiver's*
+  map entries are havocked, so quantified guarantees survive calls.
+* Field validity: same-class pairs only, two possibly-aliasing receivers
+  (`_field_validity3`, `_field_validity_commute`); cross-class and
+  field/global pairs commute structurally by the guard restriction.
+* An array field `var int[] a ...` introduces a **named array type**
+  `Arr_C_a` (`elems_C_a`, `len_C_a`, alloc set). Its plain clauses govern the
+  reference; its `[i]` clauses are the element spec, and element guards are
+  state-independent (`tid` + index only), which makes element validity(3)
+  trivial. Element accesses carry null + bounds obligations.
+* Spec-side quantifiers: `forall o : C . p`, `forall j : int . p`,
+  `forall a in C.f . p` (over field C.f's arrays).
+* Sugar: `lock m;` (no clauses) expands to the standard mutex discipline;
+  `guarded_by m` on a field/global expands to `both-mover if <lock> == tid`.
+* Not yet done (see PLAN.md): Anchor's FRESH/LOCAL/SHARED object-state ghost
+  (`isLocal`-style specs), class invariants, owner-relative element guards
+  (`holds(this)` on array elements), `modifies` clauses.
+
+`interp.py` mirrors all of this with a heap inside its flat store dict
+(`("ref", T, addr)` values, `("fld"/"elem"/"len"/"next", ...)` keys); run-time
+faults (null deref, bounds, negative size) are reachable-`wrong`s.
+
 ### Adding to the language
 
 Grammar keyword? update `lexer.KEYWORDS` + `parser`. New statement/expr? add an
@@ -71,7 +112,11 @@ Grammar keyword? update `lexer.KEYWORDS` + `parser`. New statement/expr? add an
 `examples/*.mml` are the paper's examples plus corner cases (write-guarded,
 nested control, non-atomic chains, atomic-calls-atomic) and rejected programs
 (`racy_bad`, `assert_fail`, `double_release`, `both_mover_loop`,
-`rely_not_transitive`, `rely_not_reflexive`). There is one
+`rely_not_transitive`, `rely_not_reflexive`). The object extension adds
+`obj_counter`, `obj_counter_client` (quantified R/G), `obj_array`
+(per-element movers), `obj_oracle_safe`/`obj_oracle_unsafe` (differential
+oracle over a published object), and the rejected `obj_racy_bad`; their tests
+live in `tests/test_objects.py`. There is one
 unit-test module per source file (`tests/test_<module>.py`) plus end-to-end
 `tests/test_examples.py`; `tests/_util.py` holds the `needs_boogie` skip marker.
 Boogie-dependent tests self-skip when the prover is absent. Run `pytest tests/`;

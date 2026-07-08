@@ -362,6 +362,47 @@ def test_slot_value_lost_without_rely():
     assert not res.ok
 
 
+# ---------------------------------------------------------------- sugar
+
+def test_default_lock_clauses():
+    prog, _ = tc("class C { lock m; }")
+    m = prog.classes[0].find_field("m")
+    assert [(cl.access, cl.mover.name) for cl in m.clauses] == \
+        [("write", "R"), ("write", "L"), ("read", "B")]
+
+
+def test_guarded_by_sugar():
+    prog, _ = tc("class C { var int x guarded_by m; lock m; }")
+    x = prog.classes[0].find_field("x")
+    assert len(x.clauses) == 1 and x.clauses[0].mover.name == "B"
+
+
+@needs_boogie
+def test_sugared_counter_verifies():
+    src = """
+class Counter {
+  var int x   guarded_by m;
+  lock m;
+  atomic
+  requires true
+  ensures  this.x == \\old(this.x) + n && result == this.x && this.m == \\old(this.m)
+  add(int n) {
+    acquire(this.m);
+    t = this.x;
+    t = t + n;
+    this.x = t;
+    result = t;
+    release(this.m);
+  }
+}
+relies true guarantees true requires true ensures true
+main() { yield; c = new Counter; r = c.add(2); assert r == 2; yield; }
+thread { main(); } thread { main(); }
+"""
+    res = check_source(src, "sugar.mml")
+    assert res.ok, res.render()
+
+
 # -------------------------------------------------- interpreter (oracle)
 
 from melvin.interp import Interpreter

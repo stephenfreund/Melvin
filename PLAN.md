@@ -1,5 +1,25 @@
 # Plan: Objects, Fields, and Arrays for Melvin (`objects` branch)
 
+> **Status (2026-07-07).** Phases 1–5 and 7 are implemented on this branch
+> (front end, heap vcgen, field/array validity, quantified R/G, precise call
+> framing, arrays, interpreter + annotator, docs/demo/sugar); see the commit
+> history and `tests/test_objects.py`. Notable deltas from the plan below:
+>
+> * Call framing improved on §2.5: when a callee (transitively) writes the
+>   heap only through `this`, the call site havocs just the receiver's map
+>   entries (a point update) instead of whole maps — no `modifies` clauses
+>   needed for the common case.
+> * Array element guards are restricted to `tid` + the index variable
+>   (state-independent); owner-relative guards (`holds(this)`, `this.read`)
+>   from the full FastTrack example need the phase-6 machinery and are
+>   future work, as are `forall a : C.f`-style guards on the reference
+>   itself. Spec-side `forall a in C.f . p` and `forall j : int . p` were
+>   added instead to make per-slot relies/guarantees expressible.
+> * `x = f(args)` / `x = e.m(args)` result binding was added (desugared to
+>   call statements in the checker).
+> * Phase 6 (FRESH/LOCAL/SHARED object-state ghost, `isLocal`, class
+>   invariants) is NOT implemented — it remains the stretch phase below.
+
 Goal: extend Melvin's language from flat globals to (roughly) the Anchor/Sink
 language — classes with mutable fields carrying state-dependent mover specs,
 per-object locks, arrays with per-element specs, allocation — while keeping
