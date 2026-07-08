@@ -17,8 +17,24 @@
 >   added instead to make per-slot relies/guarantees expressible.
 > * `x = f(args)` / `x = e.m(args)` result binding was added (desugared to
 >   call statements in the checker).
-> * Phase 6 (FRESH/LOCAL/SHARED object-state ghost, `isLocal`, class
->   invariants) is NOT implemented — it remains the stretch phase below.
+>
+> **Still to do** (the stretch phase 6 below, none of it implemented):
+> * Anchor's FRESH/LOCAL/SHARED object-state ghost map with `isLocal(e)` /
+>   `isShared(e)` guard primitives, publication on writing a reference into
+>   a shared object, the state invariant, and yield havoc that preserves
+>   fields of objects local to `tid` — this is what makes
+>   `threadlocal`-style specs provable (Anchor's `ok1.sink`).
+> * Class invariants (`invariant e;` in a class, checked at reducible-
+>   sequence boundaries) — also what "allocated cells all satisfy P"
+>   arguments about shared objects need (see obj_oracle_safe.mml's comment).
+> * Owner-relative array element guards (`holds(this)` / `this.f` in `[i]`
+>   clauses), needed for the full FastTrack VarState example; element guards
+>   are currently limited to `tid` and the index variable.
+> * `modifies this.f` clauses as an alternative to the writes-only-this
+>   point-framing analysis, for callees that legitimately write other
+>   objects.
+> * `write_guarded_by` sugar (only `guarded_by` and the default `lock m;`
+>   discipline exist).
 
 Goal: extend Melvin's language from flat globals to (roughly) the Anchor/Sink
 language — classes with mutable fields carrying state-dependent mover specs,

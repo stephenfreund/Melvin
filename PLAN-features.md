@@ -1,13 +1,24 @@
 # Plan: Traces, Elided Specs, Explanations/Snapshots, Final States, Counterexamples
 
-> **Status (2026-07-08): implemented** on `main` (scalar forms) and merged
-> into `objects` with the heap extensions: reachable-heap isomorphism for
-> final states, object diagrams in traces/finals, receiver-field tracking in
-> the hover flow, and heap counterexamples decoded from the model's Select_
-> graphs (`C#k.f` rows; array element models remain a documented gap).
-> One deviation: the hover popup shows the abstract store as a table rather
-> than a diagram (the ("fld", f) receiver-relative facts have no object
-> identity to draw).
+> **Status (2026-07-08): implemented.** All five features are on `main` in
+> scalar form and on `objects` with the heap extensions (reachable-heap
+> isomorphism for final states, object diagrams in traces/finals,
+> receiver-field tracking in the hover flow, and heap counterexamples decoded
+> from the Boogie model's Select_ graphs into `C#k.f` rows).
+>
+> **Still to do:**
+> * Array **element** values in counterexamples are not decoded (the model's
+>   nested `[at][int]T` select graphs are skipped); element rows would need a
+>   two-level Select_ lookup in `boogie_backend.model_table`.
+> * The hover schematic renders as a table, not an object diagram: the
+>   `this.f` facts are receiver-relative with no object identity to draw.
+>   Drawing a one-box "this" diagram would be a small `snapshot.js` addition.
+> * The demo UI changes are tested at the API level and syntax-checked only;
+>   a manual browser pass (hover popups, trace scrubber, finals diagrams,
+>   counterexample checkbox) has not been done.
+> * Counterexample values are inherently partial (Boogie prunes SSA
+>   incarnations); no further mitigation is planned, but the UI could label
+>   missing values explicitly.
 
 Five features, each landing on `main` first (suite green), with `main` merged
 into `objects` after each phase so the ancestor property is preserved; the
