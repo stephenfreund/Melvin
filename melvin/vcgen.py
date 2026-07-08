@@ -882,6 +882,8 @@ class Lowerer:
         self.em.assert_(inv, s.span, "loop invariant may not hold on entry")
         for g in modified:
             self.em.line(f"havoc v_{g};")
+        for l in self._loop_modified_locals(s, ctx):
+            self.em.line(f"havoc v_{l};")
         self.em.line(f"assume {inv};")
         self.em.line("if (*) {")
         self.em.indent()
@@ -1091,6 +1093,38 @@ class Lowerer:
                 mods.add(c.target)
         self._shared_writes(s.body, mods, set())
         return [g for g in self.shared_list() if g in mods]
+
+    def _loop_modified_locals(self, s: A.While, ctx: "_Ctx") -> List[str]:
+        """Thread-locals the loop body may write.  These must be havocked on
+        the loop's exit path too: otherwise the exit test A2 is evaluated over
+        the locals' PRE-loop values, which can make the whole continuation
+        vacuously unreachable (e.g. `i = 0; while (i < 3) {... i = i + 1;}`
+        would `assume !(0 < 3)`, verifying anything that follows)."""
+        out: Set[str] = set()
+
+        def scan(stmts: List[A.Stmt]) -> None:
+            for st in stmts:
+                if isinstance(st, A.Assign) and st.lhs not in self.ti.globals:
+                    out.add(st.lhs)
+                elif isinstance(st, A.UnstableRead):
+                    out.add(st.lhs)
+                elif isinstance(st, A.Call_):
+                    target = self.ti.call_target.get(id(st), st.name)
+                    callee = self.prog.find_func(target)
+                    if callee is not None:
+                        out.update(self._callee_local_writes(callee))
+                    if st.assign_to is not None:
+                        out.add(st.assign_to)
+                elif isinstance(st, A.If):
+                    scan(st.then_body); scan(st.else_body)
+                elif isinstance(st, A.While):
+                    scan(st.body)
+
+        scan(s.body)
+        visible = set(self.store_items(ctx.scope))
+        return sorted(n for n in out
+                      if n in visible and n not in self.ti.globals
+                      and n not in self.heap_types)
 
     # -------------------------------------------------------- function calls
     def emit_call(self, s: A.Call_, ctx: "_Ctx") -> None:

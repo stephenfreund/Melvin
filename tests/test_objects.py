@@ -403,6 +403,69 @@ thread { main(); } thread { main(); }
     assert res.ok, res.render()
 
 
+# ------------------------------------------- soundness regression fixes
+
+@needs_boogie
+def test_loop_exit_havocs_modified_locals():
+    # the exit path must not evaluate the loop test over pre-loop locals:
+    # with i stuck at 0, `assume !(0 < 3)` made everything after the loop
+    # vacuously verifiable (including `assert false`)
+    src = """
+var int g non-mover;
+atomic requires true ensures true f() {
+  i = 0;
+  while (i < 3) invariant true { r = *g; i = i + 1; }
+  assert false;
+}
+thread { f(); }
+"""
+    res = check_source(src, "loop.mml")
+    assert not res.ok
+    assert any("assertion" in d.message for d in res.diagnostics)
+
+
+@needs_boogie
+def test_loop_invariant_carries_local_facts():
+    src = """
+var int g non-mover;
+atomic requires true ensures true f() {
+  i = 0;
+  while (i < 3) invariant i >= 0 && i <= 3 { r = *g; i = i + 1; }
+  assert i == 3;
+}
+thread { f(); }
+"""
+    res = check_source(src, "loop2.mml")
+    assert res.ok, res.render()
+
+
+@needs_boogie
+def test_callee_writes_scanned_transitively():
+    # f writes x only via g; the call site must havoc x anyway
+    src = """
+var int x  read both-mover  write non-mover;
+atomic requires true ensures true g() { x = 7; }
+atomic requires true ensures true f() { g(); }
+atomic requires x == 0 ensures true main() {
+  f();
+  t = x;
+  assert t == 0;
+}
+init x == 0;
+thread { main(); }
+"""
+    res = check_source(src, "trans.mml")
+    assert not res.ok
+    assert any("assertion" in d.message for d in res.diagnostics)
+
+
+def test_result_assignment_may_not_read_globals():
+    # `result = x` on a global x was an unchecked shared read
+    with pytest.raises(MelvinError, match="local"):
+        tc("var int x non-mover;\n"
+           "atomic requires true ensures true f() { result = x; }")
+
+
 # -------------------------------------------------- interpreter (oracle)
 
 from melvin.interp import Interpreter
