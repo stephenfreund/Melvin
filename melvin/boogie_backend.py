@@ -33,6 +33,11 @@ class Obligation:
     span: Optional[Span]
     message: str
     good_note: str = ""      # optional note printed when this obligation holds
+    # Source-level variable names in scope where this obligation lives; used to
+    # restrict the counterexample store to what the user can actually see
+    # (e.g. the internal `result` return slot is hidden in functions that never
+    # use it).  None means "no restriction".
+    in_scope: Optional[frozenset] = None
 
 
 @dataclass
@@ -46,6 +51,9 @@ class Emitter:
     lines: List[str] = field(default_factory=list)
     obligations: Dict[int, Obligation] = field(default_factory=dict)
     _indent: int = 0
+    # in-scope variable names stamped onto every obligation emitted while set
+    # (the vcgen sets this per function body); None = no restriction.
+    scope_names: Optional[frozenset] = None
 
     def line(self, text: str = "") -> int:
         self.lines.append(("  " * self._indent) + text if text else "")
@@ -66,7 +74,7 @@ class Emitter:
 
     def assert_(self, expr: str, span: Optional[Span], message: str, good_note: str = "") -> None:
         ln = self.line(f"assert {expr};")
-        self.obligations[ln] = Obligation(span, message, good_note)
+        self.obligations[ln] = Obligation(span, message, good_note, self.scope_names)
 
     def text(self) -> str:
         return "\n".join(self.lines) + "\n"
@@ -132,10 +140,16 @@ def _last_incarnation(raw: Dict[str, str], base: str) -> Optional[str]:
     return best
 
 
-def model_table(raw: Dict[str, str]) -> List[Tuple[str, str]]:
+def model_table(raw: Dict[str, str],
+                in_scope: Optional[frozenset] = None) -> List[Tuple[str, str]]:
     """Map a raw Boogie model to source-level rows for the failing procedure:
     tid, the running effect as a mover letter, then each store variable's
-    current value and (when the model constrains it) its `\\old` value."""
+    current value and (when the model constrains it) its `\\old` value.
+
+    If `in_scope` is given, store variables are shown only when their source
+    name is in that set, so internal slots that leak into a procedure's
+    encoding (notably the `result` return channel of a callee) are hidden in
+    functions that do not actually use them."""
     rows: List[Tuple[str, str]] = []
     tid = _last_incarnation(raw, "tid")
     if tid is not None:
@@ -148,6 +162,8 @@ def model_table(raw: Dict[str, str]) -> List[Tuple[str, str]]:
     for base in bases:
         if base.startswith("v_"):
             var = base[2:]
+            if in_scope is not None and var not in in_scope:
+                continue                   # out-of-scope internal slot (e.g. result)
             cur = _last_incarnation(raw, base)
             if cur is not None:
                 rows.append((var, _clean_value(cur)))
@@ -245,9 +261,20 @@ class BoogieBackend:
         seen_lines = set()
         base = os.path.basename(bpl_path)
         # Boogie prints each counterexample model BEFORE the error it explains;
-        # capture blocks and attach the pending one to the next error.
-        pending_model: Optional[List[Tuple[str, str]]] = None
+        # capture the raw block and decode it once the error -- and hence the
+        # obligation's in-scope names -- is known.
+        pending_raw: Optional[Dict[str, str]] = None
         model_lines: Optional[List[str]] = None
+
+        def decode(oblig: Optional[Obligation]) -> Optional[List[Tuple[str, str]]]:
+            if pending_raw is None:
+                return None
+            try:
+                in_scope = oblig.in_scope if oblig is not None else None
+                return model_table(pending_raw, in_scope)
+            except Exception:                # malformed model: no cex, no crash
+                return None
+
         for raw in out.splitlines():
             stripped = raw.strip()
             if stripped == "*** MODEL":
@@ -256,9 +283,9 @@ class BoogieBackend:
             if stripped == "*** END_MODEL":
                 if model_lines is not None:
                     try:
-                        pending_model = model_table(_parse_model_block(model_lines))
-                    except Exception:            # malformed model: no cex, no crash
-                        pending_model = None
+                        pending_raw = _parse_model_block(model_lines)
+                    except Exception:
+                        pending_raw = None
                 model_lines = None
                 continue
             if model_lines is not None:
@@ -277,13 +304,13 @@ class BoogieBackend:
                 oblig = self._nearest_obligation(emitter, bline)
                 if oblig is not None:
                     diagnostics.append(Diagnostic(oblig.span, oblig.message,
-                                                  model=pending_model))
+                                                  model=decode(oblig)))
                 else:
                     diagnostics.append(
                         Diagnostic(None, f"Boogie error at {base}({bline}): {m.group('msg')}",
-                                   model=pending_model)
+                                   model=decode(None))
                     )
-                pending_model = None
+                pending_raw = None
                 n_errors += 1
 
         # Detect Boogie parse/type errors (no summary line, unexpected output).
