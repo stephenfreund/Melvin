@@ -51,16 +51,19 @@ class ExploreResult:
     wrong_reachable: bool
     states_explored: int
     hit_bound: bool
-    trace: Optional[List[str]] = None
+    # Each trace step: {"tid": int, "line": int, "source": str, "store": {...}}
+    # (the store is the state AFTER the step, in store-JSON form).
+    trace: Optional[List[Dict]] = None
 
 
 class Interpreter:
     def __init__(self, prog: A.Program, max_states: int = 200_000,
-                 loop_bound: int = 1000):
+                 loop_bound: int = 1000, source: Optional[str] = None):
         self.prog = prog
         self.max_states = max_states
         self.loop_bound = loop_bound
         self.globals = [v.name for v in prog.vars]
+        self.source_lines = source.splitlines() if source else None
 
     # ------------------------------------------------------------ store
     def _initial_store(self) -> Dict:
@@ -254,12 +257,15 @@ class Interpreter:
                     if is_wrong:
                         return ExploreResult(
                             True, explored, hit_bound=False,
-                            trace=(path + [self._descr(thread_id, ts)]) if want_trace else None)
+                            trace=(path + [self._trace_step(thread_id, ts, new_store)])
+                            if want_trace else None)
                     new_threads = list(thread_tuple)
                     new_threads[idx] = new_ts
                     nstate = (tuple(new_threads), self._freeze(new_store))
                     if self._state_key(nstate) not in seen:
-                        stack.append((nstate, path + [self._descr(thread_id, ts)] if want_trace else []))
+                        stack.append((nstate,
+                                      path + [self._trace_step(thread_id, ts, new_store)]
+                                      if want_trace else []))
         return ExploreResult(False, explored, hit_bound=False)
 
     def _freeze(self, store: Dict) -> Tuple:
@@ -279,6 +285,54 @@ class Interpreter:
     def _descr(tid, ts) -> str:
         head = ts.cont[0] if ts.cont else None
         return f"t{tid}:{type(head).__name__ if head else 'done'}"
+
+    def _trace_step(self, tid: int, ts: ThreadState, store_after: Dict) -> Dict:
+        """One structured trace step: which thread ran what (with the source
+        line), and the store after the step."""
+        head = ts.cont[0] if ts.cont else None
+        line = 0
+        text = "done"
+        if head is not None:
+            span = getattr(head, "span", None)
+            if span is not None:
+                line = span.start.line
+            if self.source_lines and 0 < line <= len(self.source_lines):
+                text = self.source_lines[line - 1].strip()
+            else:
+                text = type(head).__name__
+        return {"tid": tid, "line": line, "source": text,
+                "store": self.store_json(store_after)}
+
+    # ------------------------------------------------------ store rendering
+    @staticmethod
+    def _fmt_value(v) -> object:
+        """A JSON-friendly rendering of a store value."""
+        if isinstance(v, bool) or isinstance(v, int):
+            return v
+        if v is None:
+            return "None"
+        if isinstance(v, tuple):
+            if v and v[0] == "some":
+                return f"Some({Interpreter._fmt_value(v[1])})"
+            return "Nil" if not v else "[" + ", ".join(
+                str(Interpreter._fmt_value(x)) for x in v) + "]"
+        return str(v)
+
+    def store_json(self, store) -> Dict:
+        """Store-JSON: {"globals": {...}, "threads": {"1": {...}}, "objects": []}.
+        `objects` is populated by the heap-aware interpreter (objects branch)."""
+        items = dict(store) if not isinstance(store, dict) else store
+        out = {"globals": {}, "threads": {}, "objects": []}
+        for k, v in items.items():
+            if isinstance(k, str):
+                out["globals"][k] = self._fmt_value(v)
+            elif isinstance(k, tuple) and len(k) == 2 and isinstance(k[0], str):
+                name, tid = k
+                out["threads"].setdefault(str(tid), {})[name] = self._fmt_value(v)
+        out["globals"] = dict(sorted(out["globals"].items()))
+        for t in out["threads"]:
+            out["threads"][t] = dict(sorted(out["threads"][t].items()))
+        return out
 
     def _step(self, tid: int, ts: ThreadState, store: Dict):
         """Return a list of (new ThreadState, new store dict, wrong?) successors
@@ -380,6 +434,7 @@ def can_go_wrong(prog: A.Program, **kwargs) -> ExploreResult:
 
 def main(argv=None) -> int:
     import argparse
+    import json
     import sys
     from .parser import parse
     from .types import check_types
@@ -396,6 +451,8 @@ def main(argv=None) -> int:
                     help="bound on explored states (default: 200000)")
     ap.add_argument("--trace", action="store_true",
                     help="print a shortest interleaving to `wrong`, if found")
+    ap.add_argument("--json", action="store_true",
+                    help="emit a machine-readable JSON result (implies --trace)")
     args = ap.parse_args(argv)
 
     try:
@@ -404,21 +461,39 @@ def main(argv=None) -> int:
         prog = parse(src, args.file)
         check_types(prog)                      # reuse the front end for errors
     except (OSError, MelvinError) as e:
-        print(getattr(e, "render", lambda: str(e))())
+        if args.json:
+            print(json.dumps({"result": "error",
+                              "message": getattr(e, "render", lambda: str(e))()}))
+        else:
+            print(getattr(e, "render", lambda: str(e))())
         return 2
 
     if not prog.threads:
-        print("no threads to run: add one or more `thread { ... }` declarations "
-              "(functions alone are not executed).")
+        msg = ("no threads to run: add one or more `thread { ... }` declarations "
+               "(functions alone are not executed).")
+        print(json.dumps({"result": "error", "message": msg}) if args.json else msg)
         return 2
 
-    result = Interpreter(prog, max_states=args.max_states).explore(want_trace=args.trace)
+    interp = Interpreter(prog, max_states=args.max_states, source=src)
+    result = interp.explore(want_trace=args.trace or args.json)
+
+    if args.json:
+        print(json.dumps({
+            "result": ("unsafe" if result.wrong_reachable
+                       else "unknown" if result.hit_bound else "safe"),
+            "states": result.states_explored,
+            "trace": result.trace,
+        }))
+        return 1 if result.wrong_reachable else (3 if result.hit_bound else 0)
+
     if result.wrong_reachable:
         print(f"UNSAFE: some interleaving reaches `wrong` "
               f"(explored {result.states_explored} states).")
         if args.trace and result.trace:
-            print("  interleaving (thread:next-step):")
-            print("    " + " -> ".join(result.trace))
+            print("  failing interleaving:")
+            for step in result.trace:
+                print(f"    t{step['tid']}  {args.file}:{step['line']}  "
+                      f"{step['source']}")
         return 1
     if result.hit_bound:
         print(f"UNKNOWN: hit the {args.max_states}-state bound without reaching "

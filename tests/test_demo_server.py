@@ -155,7 +155,8 @@ def test_run_unsafe_with_trace(client):
     res = client.post("/api/run", json={"source": read_example("oracle_unsafe.mml")})
     body = res.json()
     assert body["status"] == "unsafe"
-    assert body["trace"] and all(":" in step for step in body["trace"])
+    assert body["trace"]
+    assert all(step["line"] > 0 and step["source"] for step in body["trace"])
 
 
 def test_run_front_end_error(client):

@@ -8,8 +8,11 @@ Grammar (informal):
     lock_decl   := 'lock' IDENT mover_clause* ';'
     mover_clause:= ('[' IDENT ']')? ('read'|'write')? MOVER ('if' pred)?
     fn_decl     := fn_spec IDENT '(' ')' block
-    fn_spec     := 'atomic' MOVER? 'requires' pred 'ensures' pred
-                 | 'relies' pred 'guarantees' pred 'requires' pred 'ensures' pred
+    fn_spec     := 'atomic' MOVER? ('requires' pred)? ('ensures' pred)?
+                 | ('relies' pred)? ('guarantees' pred)? ('requires' pred)?
+                   ('ensures' pred)?                    (at least one clause)
+                 | 'func'                               (all clauses true)
+                   -- any clause that is literally `true` may be elided
     thread_decl := 'thread' block
     block       := '{' stmt* '}'
     stmt        := 'skip' ';' | 'yield' ';' | 'wrong' ';'
@@ -95,11 +98,12 @@ class Parser:
             pred = self.parse_expr()
             end = self.expect(";").span
             return A.InitDecl(pred, Span.merge(start, end))
-        if self.at("atomic") or self.at("relies"):
+        if self.at("atomic") or self.at("func") or self.at("relies") \
+                or self.at("guarantees") or self.at("requires") or self.at("ensures"):
             return self.parse_fn_decl()
         raise ParseError(
-            f"expected a declaration (var, lock, thread, atomic, relies) "
-            f"but found {self.cur.text!r}",
+            f"expected a declaration (var, lock, thread, atomic, func, or a "
+            f"spec clause) but found {self.cur.text!r}",
             self.cur.span,
         )
 
@@ -179,28 +183,35 @@ class Parser:
         return A.ThreadDecl(body, Span.merge(start, self.toks[self.p - 1].span))
 
     # -- function ----------------------------------------------------------
+    def _opt_clause(self, kw: str, default_span: Span) -> A.Expr:
+        """An optional spec clause: `kw pred` if present, else `true`.
+        Any clause that is literally `true` may simply be elided."""
+        if self.at(kw):
+            self.advance()
+            return self.parse_expr()
+        return A.BoolLit(True, default_span)
+
     def parse_fn_decl(self) -> A.FnDecl:
         start = self.cur.span
-        if self.at("atomic"):
+        if self.at("func"):
+            # `func f() { ... }`: a non-atomic function with the all-true spec
+            self.advance()
+            t = A.BoolLit(True, start)
+            spec: object = A.NonAtomicSpec(t, t, t, t)
+        elif self.at("atomic"):
             self.advance()
             mover = Effect.N
             if self.cur.text in MOVER_KW:
                 mover = MOVER_KW[self.cur.text]
                 self.advance()
-            self.expect("requires")
-            req = self.parse_expr()
-            self.expect("ensures")
-            ens = self.parse_expr()
-            spec: object = A.AtomicSpec(mover, req, ens)
+            req = self._opt_clause("requires", start)
+            ens = self._opt_clause("ensures", start)
+            spec = A.AtomicSpec(mover, req, ens)
         else:
-            self.expect("relies")
-            relies = self.parse_expr()
-            self.expect("guarantees")
-            guarantees = self.parse_expr()
-            self.expect("requires")
-            req = self.parse_expr()
-            self.expect("ensures")
-            ens = self.parse_expr()
+            relies = self._opt_clause("relies", start)
+            guarantees = self._opt_clause("guarantees", start)
+            req = self._opt_clause("requires", start)
+            ens = self._opt_clause("ensures", start)
             spec = A.NonAtomicSpec(relies, guarantees, req, ens)
         name = self.expect_kind("id", "function name").text
         self.expect("(")

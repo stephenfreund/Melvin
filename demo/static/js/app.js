@@ -385,13 +385,18 @@
       out.appendChild(banner);
       if (res.trace) {
         var label = document.createElement("div");
-        label.textContent = "One such interleaving (thread : next step):";
+        label.textContent = "One such interleaving:";
         out.appendChild(label);
         var ol = document.createElement("ol");
         ol.className = "trace-list";
         res.trace.forEach(function (step) {
           var li = document.createElement("li");
-          li.textContent = step;
+          if (step && typeof step === "object") {
+            li.textContent = "t" + step.tid + "  line " + step.line + ":  " + step.source;
+            li.dataset.line = step.line;
+          } else {
+            li.textContent = String(step);
+          }
           ol.appendChild(li);
         });
         out.appendChild(ol);

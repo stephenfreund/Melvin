@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
@@ -302,7 +303,7 @@ async def _run_interpreter(source: str) -> dict:
     try:
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "melvin.interp", path,
-            "--max-states", str(MAX_STATES), "--trace",
+            "--max-states", str(MAX_STATES), "--json",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
         try:
             stdout, _ = await asyncio.wait_for(proc.communicate(), RUN_TIMEOUT)
@@ -317,16 +318,15 @@ async def _run_interpreter(source: str) -> dict:
 
     out = stdout.decode(errors="replace")
     status = {0: "safe", 1: "unsafe", 3: "unknown"}.get(proc.returncode, "error")
-    states = None
-    m = re.search(r"explored (\d+) states", out)
-    if m:
-        states = int(m.group(1))
-    trace = None
-    m = re.search(r"interleaving \(thread:next-step\):\s*\n\s*(.+)", out)
-    if m:
-        trace = [step.strip() for step in m.group(1).split("->")]
-    return {"status": status, "states": states, "trace": trace,
-            "message": out.splitlines()[0] if out else "", "diagnostics": []}
+    try:
+        data = json.loads(out)
+    except ValueError:
+        data = {}
+    return {"status": data.get("result", status),
+            "states": data.get("states"),
+            "trace": data.get("trace"),
+            "finals": data.get("finals"),
+            "message": data.get("message", ""), "diagnostics": []}
 
 
 # ------------------------------------------------------------------ static UI
