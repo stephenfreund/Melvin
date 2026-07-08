@@ -156,6 +156,10 @@ class TypeChecker:
             for cl in v.clauses:
                 self._infer(cl.cond, BOOL, env)
 
+        # the init predicate is a one-store predicate over the globals
+        if self.prog.init is not None:
+            self._infer(self.prog.init.pred, BOOL, _Env(self, scope=None))
+
         for f in self.prog.funcs:
             scope = f"fn:{f.name}"
             self.locals[scope] = {}
@@ -253,6 +257,13 @@ class TypeChecker:
             return
         # lhs is a local
         if lhs == "result":
+            if globals_in_rhs:
+                # `result = <global>` would be a shared read with no mover
+                # check: reject it like any other compound shared read
+                raise TypeError_(
+                    "the right-hand side of an assignment to result may only "
+                    "reference thread-local variables; read shared state into "
+                    "a local first", s.span)
             fn = env.func
             rt = self.func_return[fn.name] if fn else INT
             self._infer(s.rhs, rt, env)

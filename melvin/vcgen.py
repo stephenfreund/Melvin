@@ -33,6 +33,12 @@ from .types import TypeInfo
 BUILTIN_FUNCS = {"head", "tail", "Some", "even", "isNone", "theVal"}
 
 
+def _unwrap_not(c: A.Cond) -> A.Cond:
+    while isinstance(c, A.NotCond):
+        c = c.inner
+    return c
+
+
 class Translator:
     """Translate Mover Logic expressions to Boogie expressions."""
 
@@ -448,6 +454,8 @@ class Lowerer:
         self.em.assert_(inv, s.span, "loop invariant may not hold on entry")
         for g in modified:
             self.em.line(f"havoc v_{g};")
+        for l in self._loop_modified_locals(s, ctx):
+            self.em.line(f"havoc v_{l};")
         self.em.line(f"assume {inv};")
         self.em.line("if (*) {")
         self.em.indent()
@@ -574,21 +582,52 @@ class Lowerer:
                 if isinstance(st, (A.Acquire, A.Release)):
                     mods.add(st.lock)
                 if isinstance(st, A.If):
-                    if isinstance(st.cond, A.CasCond):
-                        mods.add(st.cond.target)
+                    c = _unwrap_not(st.cond)
+                    if isinstance(c, A.CasCond):
+                        mods.add(c.target)
                     scan(st.then_body); scan(st.else_body)
                 if isinstance(st, A.While):
-                    if isinstance(st.cond, A.CasCond):
-                        mods.add(st.cond.target)
+                    c = _unwrap_not(st.cond)
+                    if isinstance(c, A.CasCond):
+                        mods.add(c.target)
                     scan(st.body)
                 if isinstance(st, A.Call_):
                     mods.update(self.ti.globals.keys())
-        if isinstance(s.cond, A.CasCond):
-            mods.add(s.cond.target)
-        if isinstance(s.cond, A.NotCond) and isinstance(s.cond.inner, A.CasCond):
-            mods.add(s.cond.inner.target)
+        c = _unwrap_not(s.cond)
+        if isinstance(c, A.CasCond):
+            mods.add(c.target)
         scan(s.body)
         return [g for g in self.globals_list() if g in mods]
+
+    def _loop_modified_locals(self, s: A.While, ctx: "_Ctx") -> List[str]:
+        """Thread-locals the loop body may write.  These must be havocked on
+        the loop's exit path too: otherwise the exit test A2 is evaluated over
+        the locals' PRE-loop values, which can make the whole continuation
+        vacuously unreachable (e.g. `i = 0; while (i < 3) {... i = i + 1;}`
+        would `assume !(0 < 3)`, verifying anything that follows).  Facts
+        about loop variables needed after the loop must come from the loop
+        invariant."""
+        out: Set[str] = set()
+
+        def scan(stmts: List[A.Stmt]) -> None:
+            for st in stmts:
+                if isinstance(st, A.Assign) and st.lhs not in self.ti.globals:
+                    out.add(st.lhs)
+                elif isinstance(st, A.UnstableRead):
+                    out.add(st.lhs)
+                elif isinstance(st, A.Call_):
+                    callee = self.prog.find_func(st.name)
+                    if callee is not None:
+                        out.update(self._callee_local_writes(callee))
+                elif isinstance(st, A.If):
+                    scan(st.then_body); scan(st.else_body)
+                elif isinstance(st, A.While):
+                    scan(st.body)
+
+        scan(s.body)
+        visible = set(self.store_items(ctx.scope))
+        return sorted(n for n in out
+                      if n in visible and n not in self.ti.globals)
 
     # -------------------------------------------------------- function calls
     def emit_call(self, s: A.Call_, ctx: "_Ctx") -> None:
@@ -638,27 +677,39 @@ class Lowerer:
 
     def _callee_global_writes(self, callee: A.FnDecl) -> List[str]:
         out: Set[str] = set()
-
-        def scan(stmts):
-            for st in stmts:
-                if isinstance(st, A.Assign) and st.lhs in self.ti.globals:
-                    out.add(st.lhs)
-                if isinstance(st, (A.Acquire, A.Release)):
-                    out.add(st.lock)
-                if isinstance(st, A.If):
-                    if isinstance(st.cond, A.CasCond):
-                        out.add(st.cond.target)
-                    if isinstance(st.cond, A.NotCond) and isinstance(st.cond.inner, A.CasCond):
-                        out.add(st.cond.inner.target)
-                    scan(st.then_body); scan(st.else_body)
-                if isinstance(st, A.While):
-                    if isinstance(st.cond, A.CasCond):
-                        out.add(st.cond.target)
-                    if isinstance(st.cond, A.NotCond) and isinstance(st.cond.inner, A.CasCond):
-                        out.add(st.cond.inner.target)
-                    scan(st.body)
-        scan(callee.body)
+        self._global_writes(callee.body, out, {callee.name})
         return [g for g in self.globals_list() if g in out]
+
+    def _global_writes(self, stmts: List[A.Stmt], out: Set[str],
+                       seen_fns: Set[str]) -> None:
+        """Collect the globals `stmts` may write, following calls
+        TRANSITIVELY: a callee that writes x only via a nested call must
+        still have x havocked at its call sites, or the caller would keep
+        reasoning with x's stale pre-call value."""
+
+        def cas_target(c: A.Cond) -> None:
+            c = _unwrap_not(c)
+            if isinstance(c, A.CasCond):
+                out.add(c.target)
+
+        for st in stmts:
+            if isinstance(st, A.Assign) and st.lhs in self.ti.globals:
+                out.add(st.lhs)
+            elif isinstance(st, (A.Acquire, A.Release)):
+                out.add(st.lock)
+            elif isinstance(st, A.If):
+                cas_target(st.cond)
+                self._global_writes(st.then_body, out, seen_fns)
+                self._global_writes(st.else_body, out, seen_fns)
+            elif isinstance(st, A.While):
+                cas_target(st.cond)
+                self._global_writes(st.body, out, seen_fns)
+            elif isinstance(st, A.Call_):
+                if st.name not in seen_fns:
+                    seen_fns.add(st.name)
+                    callee = self.prog.find_func(st.name)
+                    if callee is not None:
+                        self._global_writes(callee.body, out, seen_fns)
 
     def _callee_local_writes(self, callee: A.FnDecl) -> List[str]:
         scope = f"fn:{callee.name}"

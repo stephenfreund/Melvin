@@ -16,7 +16,7 @@ ensures  head(top) == v && tail(top) == \old(top)
 push() {
   t = *top;
   nt = v :: t;
-  while (!cas(top, t, nt)) invariant top == \old(top) {
+  while (!cas(top, t, nt)) invariant top == \old(top) && nt == v :: t {
     t = *top;
     nt = v :: t;
   }
