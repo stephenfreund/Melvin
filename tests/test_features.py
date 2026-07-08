@@ -100,3 +100,61 @@ def test_json_safe(capsys):
     out = json.loads(capsys.readouterr().out)
     assert rc == 0
     assert out["result"] == "safe"
+
+
+# --------------------------------------------- F3: final-state enumeration
+
+def _explore(src, **kw):
+    prog = parse(src, "t.mml")
+    check_types(prog)
+    return Interpreter(prog, source=src, **kw).explore()
+
+
+def test_single_final_state():
+    src = (EXAMPLES / "oracle_safe.mml").read_text()
+    r = _explore(src)
+    assert r.finals_complete
+    assert len(r.finals) == 1
+    assert r.finals[0]["globals"] == {"m": 0, "x": 4}
+
+
+def test_racing_writers_two_finals():
+    src = """
+var int x  non-mover;
+func w1() { yield; x = 1; yield; }
+func w2() { yield; x = 2; yield; }
+thread { w1(); }
+thread { w2(); }
+"""
+    r = _explore(src)
+    assert r.finals_complete
+    assert sorted(f["globals"]["x"] for f in r.finals) == [1, 2]
+
+
+def test_finals_incomplete_when_bounded():
+    src = (EXAMPLES / "oracle_safe.mml").read_text()
+    prog = parse(src, "t.mml")
+    check_types(prog)
+    r = Interpreter(prog, max_states=5, source=src).explore()
+    assert r.hit_bound and not r.finals_complete
+
+
+def test_finals_cli_output(capsys):
+    rc = run_main([str(EXAMPLES / "oracle_safe.mml")])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "1 distinct final store(s):" in out
+    assert "x = 4" in out
+
+
+def test_no_finals_flag(capsys):
+    run_main([str(EXAMPLES / "oracle_safe.mml"), "--no-finals"])
+    out = capsys.readouterr().out
+    assert "final store" not in out
+
+
+def test_finals_in_json(capsys):
+    run_main([str(EXAMPLES / "oracle_safe.mml"), "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert out["finals"] == [{"globals": {"m": 0, "x": 4}, "objects": []}]
+    assert out["finals_complete"] is True
