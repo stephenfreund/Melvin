@@ -381,6 +381,29 @@ def test_model_table_heap_rows():
     assert rows["Counter#0.x"] == "2"
 
 
+def test_model_table_missing_values_labeled():
+    # In-scope variables the model never mentions surface as explicit `?`
+    # rows instead of silently disappearing from the table.
+    from melvin.boogie_backend import model_table, _parse_model_block
+    block = ["tid -> 1", "v_x -> 3"]
+    entries, funcs = _parse_model_block(block)
+    rows = model_table(entries, funcs,
+                       in_scope=frozenset({"x", "y", "m"}))
+    d = dict(rows)
+    assert d["x"] == "3"
+    assert d["y"] == "?" and d["m"] == "?"
+    # without a scope there is no variable universe, so no `?` rows
+    assert "?" not in dict(model_table(entries, funcs)).values()
+
+
+def test_counterexample_render_notes_unknowns():
+    from melvin.diagnostics import Diagnostic
+    d = Diagnostic(None, "boom", model=[("x", "3"), ("y", "?")])
+    out = d.render()
+    assert "y = ?" in out
+    assert "not constrained" in out
+
+
 def test_finals_in_json(capsys):
     run_main([str(EXAMPLES / "oracle_safe.mml"), "--json"])
     out = json.loads(capsys.readouterr().out)

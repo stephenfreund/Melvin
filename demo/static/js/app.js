@@ -420,6 +420,12 @@
         var objList = Object.keys(objs).map(function (k) { return objs[k]; });
         if (objList.length)
           cex.appendChild(Snapshot.render({ globals: {}, threads: {}, objects: objList }));
+        if (d.model.some(function (row) { return row[1] === "?"; })) {
+          var note = document.createElement("div");
+          note.className = "diag-cex-label";
+          note.textContent = "? = not constrained by the failing path";
+          cex.appendChild(note);
+        }
         li.appendChild(cex);
       }
       li.addEventListener("click", function () { jumpTo(d); });
