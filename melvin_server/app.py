@@ -10,7 +10,7 @@ Design notes (vs. the Anchor demo this replaces as inspiration):
   * bounded concurrency + queue, per-IP rate limit, source-size cap, and an
     LRU result cache.  Handlers never leak stack traces.
 
-Run locally:   uvicorn demo.server.app:app --reload
+Run locally:   melvin-server [--reload]   (or: uvicorn melvin_server.app:app)
 Configuration is via MELVIN_DEMO_* environment variables (see below).
 """
 
@@ -46,8 +46,8 @@ from .examples_manifest import BY_NAME, EXAMPLES
 
 # --------------------------------------------------------------- configuration
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 EXAMPLES_DIR = Path(os.environ.get("MELVIN_EXAMPLES_DIR", REPO_ROOT / "examples"))
 
 VERIFY_TIMEOUT = int(os.environ.get("MELVIN_DEMO_VERIFY_TIMEOUT", "30"))   # s
@@ -342,3 +342,22 @@ async def index():
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+# ------------------------------------------------------------------ CLI entry
+
+def main() -> None:
+    """`melvin-server`: run the demo server locally with uvicorn."""
+    import argparse
+
+    import uvicorn
+
+    ap = argparse.ArgumentParser(
+        prog="melvin-server", description="Run the Melvin web demo server.")
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=8000)
+    ap.add_argument("--reload", action="store_true",
+                    help="restart on source changes (development)")
+    args = ap.parse_args()
+    uvicorn.run("melvin_server.app:app", host=args.host, port=args.port,
+                reload=args.reload)

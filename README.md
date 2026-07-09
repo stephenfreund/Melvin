@@ -192,11 +192,11 @@ generated-Boogie view, and a Run-all-interleavings button) backed by a small
 verification server that runs locally or on Amazon Lightsail:
 
 ```bash
-pip install -r demo/requirements.txt
-uvicorn demo.server.app:app --reload      # then open http://127.0.0.1:8000
+pip install -r melvin_server/requirements.txt
+uvicorn melvin_server.app:app --reload      # then open http://127.0.0.1:8000
 ```
 
-See [`demo/README.md`](demo/README.md) for the Docker image and the Lightsail
+See [`melvin_server/README.md`](melvin_server/README.md) for the Docker image and the Lightsail
 deployment script.
 
 ## Running the tests

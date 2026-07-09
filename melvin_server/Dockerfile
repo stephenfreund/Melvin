@@ -43,11 +43,11 @@ ENV DOTNET_ROOT=/usr/share/dotnet \
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY melvin ./melvin
+COPY melvin_server ./melvin_server
 COPY examples ./examples
-COPY demo ./demo
 
 RUN python3 -m venv /opt/venv \
- && pip install --no-cache-dir . -r demo/requirements.txt
+ && pip install --no-cache-dir .
 
 # Smoke test: verify + run one example; the build fails if the toolchain is broken.
 RUN melvin examples/counter.mml && melvin-run examples/oracle_safe.mml
@@ -56,4 +56,4 @@ RUN useradd -r -m melvin
 USER melvin
 
 EXPOSE 8080
-CMD ["uvicorn", "demo.server.app:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "melvin_server.app:app", "--host", "0.0.0.0", "--port", "8080"]

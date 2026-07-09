@@ -14,7 +14,7 @@ Architecturally inspired by the Anchor / Synchronicity verifiers in
 ## Commands
 
 ```bash
-pip install -e .                                 # install (adds `melvin`, `melvin-run`)
+pip install -e .                                 # install (adds `melvin`, `melvin-run`, `melvin-server`)
 export MELVIN_BOOGIE=/path/to/boogie          # if boogie isn't on PATH
 melvin examples/counter.mml                   # verify a program
 melvin examples/counter.mml --show-bpl        # print generated Boogie
@@ -94,13 +94,13 @@ they are asserted one reducible sequence at a time.
 
 ## Web demo
 
-`demo/` holds a FastAPI server (`demo/server/app.py`: verify in-process via
+`melvin_server/` holds a FastAPI server (`melvin_server/app.py`: verify in-process via
 `check_source`, interpreter in a killable subprocess; rate limit, job queue,
 LRU cache, `MELVIN_DEMO_*` env config) and a no-build frontend
-(`demo/static/`, vendored CodeMirror 5). Run with
-`uvicorn demo.server.app:app --reload`; demo deps in `demo/requirements.txt`
-(not core deps — `tests/test_demo_server.py` self-skips without them).
-`demo/Dockerfile` bundles Boogie+Z3 and smoke-tests at build time;
-`demo/deploy/deploy-lightsail.sh` deploys to Lightsail Containers (`-n` = dry
-run). The Examples menu manifest (`demo/server/examples_manifest.py`) is also
+(`melvin_server/static/`, vendored CodeMirror 5). Run with `melvin-server [--reload]`
+(or `uvicorn melvin_server.app:app --reload`); the demo deps (fastapi, uvicorn,
+httpx) are part of the main pyproject dependencies.
+`melvin_server/Dockerfile` bundles Boogie+Z3 and smoke-tests at build time;
+`melvin_server/deploy/deploy-lightsail.sh` deploys to Lightsail Containers (`-n` = dry
+run). The Examples menu manifest (`melvin_server/examples_manifest.py`) is also
 the served-file allowlist — add new examples there.

@@ -1,16 +1,12 @@
-"""Tests for the demo web server (demo/server/app.py).
+"""Tests for the demo web server (melvin_server/app.py).
 
-The demo dependencies (fastapi, httpx) are NOT core dependencies; this module
-skips itself when they are missing.  Boogie-dependent tests use the same
-`needs_boogie` marker as the rest of the suite.
+The demo dependencies (fastapi, httpx) install with the package, but this
+module still skips itself when they are missing (e.g. a minimal environment).
+Boogie-dependent tests use the same `needs_boogie` marker as the rest of the
+suite.
 """
 
-import sys
-from pathlib import Path
-
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # for `demo.*`
 
 fastapi = pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
@@ -19,8 +15,8 @@ from fastapi.testclient import TestClient
 
 from _util import EXAMPLES, needs_boogie
 
-from demo.server.app import app, MAX_SOURCE
-from demo.server.examples_manifest import EXAMPLES as MANIFEST
+from melvin_server.app import app, MAX_SOURCE
+from melvin_server.examples_manifest import EXAMPLES as MANIFEST
 
 
 @pytest.fixture(scope="module")
