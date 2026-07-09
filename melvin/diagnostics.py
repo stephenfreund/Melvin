@@ -87,6 +87,8 @@ class Diagnostic:
             out += "\n    counterexample:"
             for name, value in self.model:
                 out += f"\n      {name} = {value}"
+            if any(v == "?" for _n, v in self.model):
+                out += "\n      (? = not constrained by the failing path)"
         for r in self.related:
             out += "\n  " + r.render()
         return out

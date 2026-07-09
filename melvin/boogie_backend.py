@@ -149,7 +149,10 @@ def model_table(raw: Dict[str, str],
     If `in_scope` is given, store variables are shown only when their source
     name is in that set, so internal slots that leak into a procedure's
     encoding (notably the `result` return channel of a callee) are hidden in
-    functions that do not actually use them."""
+    functions that do not actually use them.  In-scope variables the model
+    does not constrain at all (Boogie prunes SSA incarnations irrelevant to
+    the failing path) are listed with the value `?` so the omission is
+    explicit rather than silent."""
     rows: List[Tuple[str, str]] = []
     tid = _last_incarnation(raw, "tid")
     if tid is not None:
@@ -159,6 +162,7 @@ def model_table(raw: Dict[str, str],
         code = int(_clean_value(eff))
         rows.append(("eff", _EFF_LETTER.get(code, str(code))))
     bases = sorted({name.partition("@")[0] for name in raw})
+    shown = set()
     for base in bases:
         if base.startswith("v_"):
             var = base[2:]
@@ -167,9 +171,13 @@ def model_table(raw: Dict[str, str],
             cur = _last_incarnation(raw, base)
             if cur is not None:
                 rows.append((var, _clean_value(cur)))
+                shown.add(var)
             old = _last_incarnation(raw, f"o_{var}")
             if old is not None and old != cur:
                 rows.append((f"\\old({var})", _clean_value(old)))
+    if in_scope is not None:
+        for var in sorted(set(in_scope) - shown):
+            rows.append((var, "?"))
     return rows
 
 

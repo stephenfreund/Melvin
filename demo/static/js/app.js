@@ -408,6 +408,12 @@
         cap.textContent = "counterexample store:";
         cex.appendChild(cap);
         cex.appendChild(t);
+        if (d.model.some(function (row) { return row[1] === "?"; })) {
+          var note = document.createElement("div");
+          note.className = "diag-cex-label";
+          note.textContent = "? = not constrained by the failing path";
+          cex.appendChild(note);
+        }
         li.appendChild(cex);
       }
       li.addEventListener("click", function () { jumpTo(d); });
