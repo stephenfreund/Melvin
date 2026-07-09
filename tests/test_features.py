@@ -227,6 +227,34 @@ thread { w(); }
             assert s["line"] > 0
 
 
+def test_method_params_do_not_clobber_caller_locals():
+    # a method parameter named like a caller local is frame-local
+    src = """
+class Cell {
+  var int v  non-mover;
+  atomic set(int t) { this.v = t; }
+}
+var Cell c  non-mover;
+init c == null;
+func w() {
+  yield;
+  t = 5;
+  a = new Cell;
+  a.set(9);
+  assert t == 5;
+  c = a;
+  yield;
+}
+thread { w(); }
+"""
+    r = _explore(src)
+    assert not r.wrong_reachable
+    steps = r.finals[0]["trace"]
+    ret = next(s for s in steps if s["kind"] == "return"
+               and "Cell.set" in s["source"])
+    assert ret["line"] > 0
+
+
 # ---------------------------------------- heap-aware feature extensions
 
 def test_finals_isomorphic_heaps_collapse():
@@ -246,32 +274,39 @@ thread { w(); }
 thread { w(); }
 """
     r = _explore(src)
-    # Each thread still holds its own cell in the local `a`, so both cells are
-    # live (rooted at the locals) and are labelled with their allocating
-    # thread.  Address renumbering still collapses the many interleavings, but
-    # the two outcomes -- t1 published vs t2 published -- stay distinct because
-    # the published cell (#1) records a different allocator in each.
+    # `a` is a local of w(), so it dies when w() returns: at the final state
+    # only the published cell is live.  Address renumbering collapses the
+    # many interleavings, but the two outcomes -- t1 published vs t2
+    # published -- stay distinct because the surviving cell records a
+    # different allocator in each.
     assert r.finals_complete
     assert len(r.finals) == 2
     for f in r.finals:
         assert f["globals"] == {"shared": "#1"}
         assert [(o["id"], o["class"], o["fields"]) for o in f["objects"]] == [
-            ("#1", "Cell", {"v": 7}), ("#2", "Cell", {"v": 7})]
-    # #1 is the published cell; across the two finals it is allocated by each
-    # thread in turn.
+            ("#1", "Cell", {"v": 7})]
     assert sorted(f["objects"][0]["allocated_by"] for f in r.finals) == [1, 2]
 
 
-def test_finals_root_at_locals_identify_allocator():
-    # Objects a thread allocates and still holds via a local appear in the
-    # finals even with no globals, each tagged with its allocating thread.
-    src = (EXAMPLES / "obj_counter_client.mml").read_text()
+def test_finals_root_at_live_locals_identify_allocator():
+    # Objects still held by a LIVE local (here the thread body's own) appear
+    # in the finals even with no globals, tagged with the allocating thread.
+    src = """
+class Cell { var int v  non-mover; }
+thread { a = new Cell; a.v = 1; }
+thread { a = new Cell; a.v = 1; }
+"""
     r = _explore(src)
     assert r.finals_complete and len(r.finals) == 1
     objs = r.finals[0]["objects"]
     assert r.finals[0]["globals"] == {}
     assert sorted((o["class"], o["allocated_by"]) for o in objs) == [
-        ("Counter", 1), ("Counter", 2)]
+        ("Cell", 1), ("Cell", 2)]
+    # ...whereas a FUNCTION's locals die at its return: obj_counter_client's
+    # counters are only held by client()'s local, so its final store is empty
+    r2 = _explore((EXAMPLES / "obj_counter_client.mml").read_text())
+    assert r2.finals_complete and len(r2.finals) == 1
+    assert r2.finals[0]["globals"] == {} and r2.finals[0]["objects"] == []
 
 
 def test_finals_true_garbage_still_collapses():
@@ -526,6 +561,45 @@ def test_trace_stores_show_call_stack():
     inner = deep[-1]["store"]["threads"][str(deep[-1]["tid"])][-1]
     assert inner["fn"] == "add2"
     assert "t" in inner["locals"]
+
+
+def test_trace_has_call_and_return_steps():
+    # traces mark calls ("call") and returns ("return from f()" at the
+    # call-site line); in a completed trace they balance
+    src = (EXAMPLES / "oracle_safe.mml").read_text()
+    r = _explore(src)
+    steps = r.finals[0]["trace"]
+    kinds = [s["kind"] for s in steps]
+    assert "call" in kinds and "return" in kinds
+    assert kinds.count("call") == kinds.count("return")
+    ret = next(s for s in steps if s["kind"] == "return")
+    assert ret["source"].startswith("return from ")
+    assert ret["line"] > 0
+
+
+def test_callee_locals_do_not_clobber_caller():
+    # every call saves/restores its whole frame, so a callee writing a
+    # same-named local cannot change the caller's value
+    src = """
+var int x  non-mover;
+func g() { t = 99; x = t; }
+func f() {
+  yield;
+  t = 1;
+  g();
+  assert t == 1;
+  yield;
+}
+thread { f(); }
+"""
+    r = _explore(src)
+    assert not r.wrong_reachable
+    # and while g runs, f's frame still shows its own t
+    steps = r.finals[0]["trace"]
+    in_g = next(s for s in steps
+                if [f["fn"] for f in s["store"]["threads"]["1"]][-1] == "g"
+                and s["store"]["threads"]["1"][-1]["locals"].get("t") == 99)
+    assert in_g["store"]["threads"]["1"][-2]["locals"]["t"] == 1
 
 
 def test_finals_have_representative_traces():
