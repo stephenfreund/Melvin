@@ -273,8 +273,8 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .snap-edge { fill: none; stroke: rgba(100,100,100,.9); stroke-width: 1.2; }
 .snap-arrowhead { fill: rgba(100,100,100,.9); }
 .snap-edge-label { font: 10px monospace; fill: currentColor; opacity: .75; }
-.snap-var-box { fill: none; stroke: rgba(100,100,100,.55); stroke-dasharray: 3 2; }
-.snap-var { font: 12px ui-monospace, Menlo, monospace; fill: currentColor; }
+.snap-scope { stroke-dasharray: 4 3; }
+.snap-scope-title-bg { fill: rgba(120,120,140,.18); }
 /* a thread's call stack: innermost frame on top, drawn as stacked cards */
 .snap-stack { display: flex; flex-direction: column; gap: 0; }
 .snap-stack .snap-table { border: 1px solid var(--border); border-radius: 4px;
