@@ -242,8 +242,6 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 
 /* ---- feature additions: hover popups, snapshots, trace scrubber, finals */
 
-.opt-cex { display: inline-flex; align-items: center; gap: 4px;
-  font-size: 12px; margin-right: 8px; opacity: .85; cursor: pointer; }
 
 .mover-popup { position: fixed; z-index: 1000; max-width: 440px;
   background: var(--panel-bg, #fff); border: 1px solid rgba(128,128,128,.45);
@@ -275,10 +273,15 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .snap-edge { fill: none; stroke: rgba(100,100,100,.9); stroke-width: 1.2; }
 .snap-arrowhead { fill: rgba(100,100,100,.9); }
 .snap-edge-label { font: 10px monospace; fill: currentColor; opacity: .75; }
+.snap-var-box { fill: none; stroke: rgba(100,100,100,.55); stroke-dasharray: 3 2; }
+.snap-var { font: 12px ui-monospace, Menlo, monospace; fill: currentColor; }
 
 .trace-wrap { display: flex; gap: 14px; align-items: flex-start; }
-.trace-wrap .trace-list { flex: 1 1 55%; max-height: 340px; overflow: auto; }
-.trace-snap { flex: 1 1 45%; position: sticky; top: 0; }
+/* the step list is user-resizable: drag the grip in its bottom-right corner */
+.trace-wrap .trace-list { flex: none; width: 55%; min-width: 180px;
+  max-width: 95%; height: 340px; max-height: none; overflow: auto;
+  resize: both; border: 1px solid var(--border); border-radius: 4px; }
+.trace-snap { flex: 1 1 auto; min-width: 0; position: sticky; top: 0; }
 li.trace-step { cursor: pointer; border-radius: 3px; padding: 0 4px; }
 li.trace-step:hover { background: rgba(120,120,220,.12); }
 li.trace-step.selected { background: rgba(120,120,220,.25); }

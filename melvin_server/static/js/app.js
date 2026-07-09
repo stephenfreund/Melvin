@@ -338,7 +338,7 @@
     startBusy("verifying");
     selectTab("output");
     postJSON("api/verify", { source: editor.getValue(),
-                             counterexample: $("#opt-cex").checked })
+                             counterexample: true })
       .then(renderVerify)
       .catch(function (err) {
         endBusy("bad", "error");

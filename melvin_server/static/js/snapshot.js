@@ -46,7 +46,15 @@ var Snapshot = (function () {
     return t;
   }
 
-  function objectDiagram(objects) {
+  // Each diagram gets its own arrowhead marker id: url(#id) resolves against
+  // the whole document, and a duplicate id inside a hidden subtree would make
+  // every other diagram's arrowheads vanish.
+  var markerSeq = 0;
+
+  /* objects: heap boxes; refs: [{label, target}] — reference-valued variables
+     drawn as labeled source nodes with an arrow to their object. */
+  function objectDiagram(objects, refs) {
+    refs = refs || [];
     var g = new dagre.graphlib.Graph();
     g.setGraph({ rankdir: "LR", nodesep: 24, ranksep: 40, marginx: 8, marginy: 8 });
     g.setDefaultEdgeLabel(function () { return {}; });
@@ -65,6 +73,13 @@ var Snapshot = (function () {
         height: TITLE_H + fields.length * ROW_H + PAD,
       });
     });
+    refs.forEach(function (r) {
+      g.setNode("$" + r.label, {
+        width: r.label.length * CHAR_W + 3 * PAD,
+        height: ROW_H + PAD,
+      });
+      g.setEdge("$" + r.label, r.target, {});
+    });
     objects.forEach(function (o) {
       Object.keys(o.fields || {}).forEach(function (f) {
         var v = String(o.fields[f]);
@@ -80,9 +95,10 @@ var Snapshot = (function () {
       width: Math.ceil(gr.width || 10), height: Math.ceil(gr.height || 10),
       viewBox: "0 0 " + Math.ceil(gr.width || 10) + " " + Math.ceil(gr.height || 10),
     });
+    var arrowId = "snap-arrow-" + (++markerSeq);
     var defs = svgEl("defs", {});
     var marker = svgEl("marker", {
-      id: "snap-arrow", viewBox: "0 0 8 8", refX: 7, refY: 4,
+      id: arrowId, viewBox: "0 0 8 8", refX: 7, refY: 4,
       markerWidth: 7, markerHeight: 7, orient: "auto",
     });
     marker.appendChild(svgEl("path", { d: "M0,0 L8,4 L0,8 z", class: "snap-arrowhead" }));
@@ -96,7 +112,7 @@ var Snapshot = (function () {
         return (i === 0 ? "M" : "L") + p.x.toFixed(1) + "," + p.y.toFixed(1);
       }).join(" ");
       svg.appendChild(svgEl("path", {
-        d: d, class: "snap-edge", "marker-end": "url(#snap-arrow)",
+        d: d, class: "snap-edge", "marker-end": "url(#" + arrowId + ")",
       }));
       var lbl = g.edge(e).field;
       if (lbl && pts.length) {
@@ -132,6 +148,23 @@ var Snapshot = (function () {
       });
       svg.appendChild(grp);
     });
+
+    refs.forEach(function (r) {
+      var n = g.node("$" + r.label);
+      var x = n.x - n.width / 2, y = n.y - n.height / 2;
+      var grp = svgEl("g", {});
+      grp.appendChild(svgEl("rect", {
+        x: x, y: y, width: n.width, height: n.height,
+        rx: n.height / 2, class: "snap-var-box",
+      }));
+      var t = svgEl("text", {
+        x: x + n.width / 2, y: y + n.height / 2 + 4,
+        "text-anchor": "middle", class: "snap-var",
+      });
+      t.textContent = r.label;
+      grp.appendChild(t);
+      svg.appendChild(grp);
+    });
     return svg;
   }
 
@@ -140,7 +173,7 @@ var Snapshot = (function () {
     opts = opts || {};
     var root = el("div", "snapshot");
     if (opts.title) root.appendChild(el("div", "snap-title", opts.title));
-    var scalars = el("div", "snap-scalars");
+    var objects = ((store && store.objects) || []).slice();
     var globals = (store && store.globals) || {};
     // Receiver-relative facts ("this.f", from the hover schematic) have no
     // heap identity to hang a real diagram on; draw them as one "this" box
@@ -154,18 +187,35 @@ var Snapshot = (function () {
       }
     });
     globals = plain;
+    if (thisFields)
+      objects.push({ id: "this", class: "this", title: "this", fields: thisFields });
+    var drawing = objects.length && typeof dagre !== "undefined";
+    var byId = {};
+    objects.forEach(function (o) { byId[o.id] = o; });
+    // Reference-valued variables move from the tables into the diagram, as
+    // labeled nodes with an arrow to their object.
+    var refs = [];
+    function splitRefs(kv, prefix) {
+      if (!drawing) return kv;
+      var rest = {};
+      Object.keys(kv).forEach(function (k) {
+        if (byId[String(kv[k])]) refs.push({ label: prefix + k, target: String(kv[k]) });
+        else rest[k] = kv[k];
+      });
+      return rest;
+    }
+    var scalars = el("div", "snap-scalars");
+    globals = splitRefs(globals, "");
     if (Object.keys(globals).length) scalars.appendChild(kvTable("globals", globals));
     var threads = (store && store.threads) || {};
     Object.keys(threads).sort().forEach(function (t) {
-      if (Object.keys(threads[t]).length)
-        scalars.appendChild(kvTable("t" + t + " locals", threads[t]));
+      var kv = splitRefs(threads[t], "t" + t + ".");
+      if (Object.keys(kv).length)
+        scalars.appendChild(kvTable("t" + t + " locals", kv));
     });
     if (scalars.childNodes.length) root.appendChild(scalars);
-    var objects = ((store && store.objects) || []).slice();
-    if (thisFields)
-      objects.push({ id: "this", class: "this", title: "this", fields: thisFields });
-    if (objects.length && typeof dagre !== "undefined") {
-      root.appendChild(objectDiagram(objects));
+    if (drawing) {
+      root.appendChild(objectDiagram(objects, refs));
     } else if (objects.length) {
       // dagre missing: fall back to tables
       objects.forEach(function (o) {
