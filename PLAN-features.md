@@ -1,24 +1,35 @@
 # Plan: Traces, Elided Specs, Explanations/Snapshots, Final States, Counterexamples
 
-> **Status (2026-07-08): implemented.** All five features are on `main` in
-> scalar form and on `objects` with the heap extensions (reachable-heap
-> isomorphism for final states, object diagrams in traces/finals,
-> receiver-field tracking in the hover flow, and heap counterexamples decoded
-> from the Boogie model's Select_ graphs into `C#k.f` rows).
+> **Status (2026-07-09): complete.** All five features are on `main` in
+> scalar form and on `objects` with the heap extensions, and every item from
+> the earlier "still to do" list is done:
 >
-> **Still to do:**
-> * Array **element** values in counterexamples are not decoded (the model's
->   nested `[at][int]T` select graphs are skipped); element rows would need a
->   two-level Select_ lookup in `boogie_backend.model_table`.
-> * The hover schematic renders as a table, not an object diagram: the
->   `this.f` facts are receiver-relative with no object identity to draw.
->   Drawing a one-box "this" diagram would be a small `snapshot.js` addition.
-> * The demo UI changes are tested at the API level and syntax-checked only;
->   a manual browser pass (hover popups, trace scrubber, finals diagrams,
->   counterexample checkbox) has not been done.
-> * Counterexample values are inherently partial (Boogie prunes SSA
->   incarnations); no further mitigation is planned, but the UI could label
->   missing values explicitly.
+> * Array **element** values decode in counterexamples (two-level `Select_`
+>   lookup for `elems_` maps, `len_` lengths, null-address filtering; null
+>   references display as `null`).
+> * The hover schematic's `this.f` facts render as a one-box "this" diagram
+>   (though the popup's schematic store is currently hidden — see below).
+> * A real-browser pass (headless Chromium via Playwright) covers hover
+>   popups, the trace scrubber, finals diagrams, and counterexamples on both
+>   branches; all checks pass with no console errors.
+> * Unconstrained in-scope variables appear as explicit `var = ?` rows with a
+>   "not constrained by the failing path" note (CLI and UI).
+>
+> Later additions (2026-07-09, by request):
+>
+> * Packaging: the demo lives in the top-level `melvin_server` package; its
+>   deps are core pyproject deps; `melvin-server [--reload]` runs it.
+> * Counterexamples are always on in the UI (checkbox removed); the mover
+>   popup's approximate schematic store is hidden (flag in `app.js`).
+> * Every final state carries a **representative trace** (`explore()` keeps a
+>   predecessor map and reconstructs interleavings on demand); shown under
+>   `melvin-run --trace` ("via:"), in `--json`, and as a collapsible clickable
+>   trace per final in the demo.
+> * Trace-step stores show each thread as a **stack of call frames**
+>   (`ThreadState.frames` + per-scope locals; save-slot-aware on `objects`).
+> * Snapshot diagrams draw globals and thread stacks as dashed scope boxes
+>   inside the SVG, with per-row arrows to heap objects (no floating pills);
+>   the interleaving step list is user-resizable.
 
 Five features, each landing on `main` first (suite green), with `main` merged
 into `objects` after each phase so the ancestor property is preserved; the
