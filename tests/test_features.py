@@ -482,5 +482,37 @@ def test_counterexample_render_notes_unknowns():
 def test_finals_in_json(capsys):
     run_main([str(EXAMPLES / "oracle_safe.mml"), "--json"])
     out = json.loads(capsys.readouterr().out)
-    assert out["finals"] == [{"globals": {"m": 0, "x": 4}, "objects": []}]
+    assert len(out["finals"]) == 1
+    final = out["finals"][0]
+    assert final["globals"] == {"m": 0, "x": 4}
+    assert final["objects"] == []
+    # each final carries a representative interleaving that reaches it
+    assert final["trace"]
     assert out["finals_complete"] is True
+
+
+def test_finals_have_representative_traces():
+    src = """
+var int x  non-mover;
+func w1() { yield; x = 1; yield; }
+func w2() { yield; x = 2; yield; }
+thread { w1(); }
+thread { w2(); }
+"""
+    r = _explore(src)
+    assert r.finals_complete and len(r.finals) == 2
+    for f in r.finals:
+        steps = f["trace"]
+        assert steps, "every final should carry a trace"
+        for s in steps:
+            assert s["tid"] in (1, 2) and "source" in s and "store" in s
+        # replaying the trace ends in this very final store
+        assert steps[-1]["store"]["globals"] == f["globals"]
+
+
+def test_finals_trace_in_cli_output(capsys):
+    rc = run_main([str(EXAMPLES / "oracle_safe.mml"), "--trace"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "via:" in out
+    assert "oracle_safe.mml:" in out

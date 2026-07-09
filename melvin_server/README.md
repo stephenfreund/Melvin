@@ -9,7 +9,7 @@ figures; a second tab shows the generated Boogie; share links encode the
 program in the URL.
 
 ```
-demo/
+melvin_server/
   server/app.py       FastAPI server (verify in-process, interpreter in a
                       killable subprocess; rate limit, job queue, LRU cache)
   server/examples_manifest.py   the Examples menu (also the file allowlist)
@@ -23,8 +23,8 @@ demo/
 Requires a working `melvin` install with Boogie (see the top-level README).
 
 ```bash
-pip install -r demo/requirements.txt
-uvicorn demo.server.app:app --reload        # from the repository root
+pip install -r melvin_server/requirements.txt
+uvicorn melvin_server.app:app --reload        # from the repository root
 # open http://127.0.0.1:8000
 ```
 
@@ -34,9 +34,9 @@ No local Boogie/Z3/.NET needed — the image contains the whole toolchain and
 the build fails if that toolchain doesn't verify `examples/counter.mml`:
 
 ```bash
-demo/deploy/run-local.sh                     # builds, then serves on :8080
+melvin_server/deploy/run-local.sh                     # builds, then serves on :8080
 # or by hand:
-docker build -f demo/Dockerfile -t melvin-demo .
+docker build -f melvin_server/Dockerfile -t melvin-demo .
 docker run --rm -p 8080:8080 melvin-demo
 ```
 
@@ -53,9 +53,9 @@ One-time prerequisites:
 Then:
 
 ```bash
-demo/deploy/deploy-lightsail.sh              # service melvin-demo, power small
-demo/deploy/deploy-lightsail.sh -n           # dry run: print the commands only
-demo/deploy/deploy-lightsail.sh -s my-demo -r us-west-2 -p micro
+melvin_server/deploy/deploy-lightsail.sh              # service melvin-demo, power small
+melvin_server/deploy/deploy-lightsail.sh -n           # dry run: print the commands only
+melvin_server/deploy/deploy-lightsail.sh -s my-demo -r us-west-2 -p micro
 ```
 
 The script builds the image for `linux/amd64`, creates the container service

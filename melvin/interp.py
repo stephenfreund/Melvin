@@ -85,7 +85,9 @@ class ExploreResult:
     trace: Optional[List[Dict]] = None
     # Distinct final stores (every thread finished), in store-JSON form,
     # deduplicated up to equality of globals and isomorphism of the reachable
-    # heap.  `finals_complete` is False if the search stopped early (bound,
+    # heap.  Each also carries a "trace": one representative interleaving
+    # (list of trace steps as above) that reaches that final store.
+    # `finals_complete` is False if the search stopped early (bound,
     # early unsafe return) or the cap was hit.
     finals: List[Dict] = field(default_factory=list)
     finals_complete: bool = True
@@ -317,18 +319,33 @@ class Interpreter:
 
         start = (tuple(threads), self._freeze(init_store))
         seen = set()
-        stack = [(start, [])]
+        stack = [start]
         explored = 0
         finals_seen = set()
-        finals: List[Tuple] = []
+        finals: List[Tuple[Tuple, List[Dict]]] = []    # (canon, trace)
         finals_overflow = False
+        # Predecessor map for trace reconstruction: for every pushed state,
+        # the state it was reached from plus the step that got there (the
+        # acting tid, the statement about to run, and the resulting frozen
+        # store).  Entries are small tuples of shared references, so keeping
+        # this for the whole search is cheap; traces (for `wrong` and for one
+        # representative interleaving per final store) are rebuilt on demand.
+        pred: Dict[Tuple, Tuple] = {}
+
+        def reconstruct(key: Tuple) -> List[Dict]:
+            steps = []
+            while key in pred:
+                key, tid, head, fstore = pred[key]
+                steps.append(self._step_json(tid, head, fstore))
+            steps.reverse()
+            return steps
 
         def finals_json(complete: bool) -> Tuple[List[Dict], bool]:
-            return ([self._final_json(c) for c in finals],
+            return ([self._final_json(c, tr) for c, tr in finals],
                     complete and not finals_overflow)
 
         while stack:
-            (state, path) = stack.pop()
+            state = stack.pop()
             key = self._state_key(state)
             if key in seen:
                 continue
@@ -345,29 +362,33 @@ class Interpreter:
                 if canon not in finals_seen:
                     if len(finals) < FINALS_CAP:
                         finals_seen.add(canon)
-                        finals.append(canon)
+                        finals.append((canon, reconstruct(key)))
                     else:
                         finals_overflow = True
                 continue
             store = dict(frozen_store)
             for idx, ts in enumerate(thread_tuple):
                 thread_id = idx + 1                      # Tid = {1, 2, ...}
+                head = ts.cont[0] if ts.cont else None
                 successors = self._step(thread_id, ts, store)
                 for (new_ts, new_store, is_wrong) in successors:
                     if is_wrong:
                         fs, fc = finals_json(False)
+                        frozen = self._freeze(new_store)
                         return ExploreResult(
                             True, explored, hit_bound=False,
-                            trace=(path + [self._trace_step(thread_id, ts, new_store)])
+                            trace=(reconstruct(key)
+                                   + [self._step_json(thread_id, head, frozen)])
                             if want_trace else None,
                             finals=fs, finals_complete=fc)
                     new_threads = list(thread_tuple)
                     new_threads[idx] = new_ts
                     nstate = (tuple(new_threads), self._freeze(new_store))
-                    if self._state_key(nstate) not in seen:
-                        stack.append((nstate,
-                                      path + [self._trace_step(thread_id, ts, new_store)]
-                                      if want_trace else []))
+                    nkey = self._state_key(nstate)
+                    if nkey not in seen:
+                        if nkey not in pred:
+                            pred[nkey] = (key, thread_id, head, nstate[1])
+                        stack.append(nstate)
         fs, fc = finals_json(True)
         return ExploreResult(False, explored, hit_bound=False,
                              finals=fs, finals_complete=fc)
@@ -440,7 +461,7 @@ class Interpreter:
         elem = self.ti.arrays.get(at, "int")
         return f"{elem}[{length}]"
 
-    def _final_json(self, canon: Tuple) -> Dict:
+    def _final_json(self, canon: Tuple, trace: Optional[List[Dict]] = None) -> Dict:
         globals_items, nodes = canon
         objects = []
         for i, node in enumerate(nodes, 1):
@@ -461,7 +482,8 @@ class Interpreter:
                                 "allocated_by": owner,
                                 "fields": fields})
         return {"globals": {k: self._fmt_value(v) for k, v in globals_items},
-                "objects": objects}
+                "objects": objects,
+                "trace": trace or []}
 
     def _freeze(self, store: Dict) -> Tuple:
         items = [
@@ -481,10 +503,9 @@ class Interpreter:
         head = ts.cont[0] if ts.cont else None
         return f"t{tid}:{type(head).__name__ if head else 'done'}"
 
-    def _trace_step(self, tid: int, ts: ThreadState, store_after: Dict) -> Dict:
+    def _step_json(self, tid: int, head, store_after) -> Dict:
         """One structured trace step: which thread ran what (with the source
-        line), and the store after the step."""
-        head = ts.cont[0] if ts.cont else None
+        line), and the store after the step (a dict or a frozen store)."""
         line = 0
         text = "done"
         if head is not None:
@@ -797,7 +818,8 @@ def main(argv=None) -> int:
     ap.add_argument("--max-states", type=int, default=200_000,
                     help="bound on explored states (default: 200000)")
     ap.add_argument("--trace", action="store_true",
-                    help="print a shortest interleaving to `wrong`, if found")
+                    help="print an interleaving to `wrong` (if found) and a "
+                         "representative interleaving per final store")
     ap.add_argument("--json", action="store_true",
                     help="emit a machine-readable JSON result (implies --trace)")
     ap.add_argument("--no-finals", action="store_true",
@@ -863,6 +885,11 @@ def main(argv=None) -> int:
                 by = f" (allocated by t{owner})" if owner is not None else ""
                 parts.append(f"{obj['id']}: {obj['class']}{{{fields}}}{by}")
             print("  " + (", ".join(parts) if parts else "(empty store)"))
+            if args.trace and st.get("trace"):
+                print("    via:")
+                for step in st["trace"]:
+                    print(f"      t{step['tid']}  {args.file}:{step['line']}  "
+                          f"{step['source']}")
 
     return 1 if result.wrong_reachable else (3 if result.hit_bound else 0)
 

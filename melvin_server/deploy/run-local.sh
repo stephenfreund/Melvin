@@ -3,5 +3,5 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-docker build -f demo/Dockerfile -t melvin-demo .
+docker build -f melvin_server/Dockerfile -t melvin-demo .
 exec docker run --rm -p "${PORT:-8080}:8080" --name melvin-demo melvin-demo

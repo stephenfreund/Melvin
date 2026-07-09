@@ -2,7 +2,7 @@
 # Deploy the Melvin demo to Amazon Lightsail Container Service.
 #
 # Usage:
-#   demo/deploy/deploy-lightsail.sh [options]
+#   melvin_server/deploy/deploy-lightsail.sh [options]
 #
 # Options:
 #   -s NAME    service name        (default: melvin-demo)
@@ -65,7 +65,7 @@ fi
 
 # ------------------------------------------------------------ build (amd64!)
 say "Building image (linux/amd64 — Lightsail runs x86)"
-run docker build --platform linux/amd64 -f "$REPO_ROOT/demo/Dockerfile" \
+run docker build --platform linux/amd64 -f "$REPO_ROOT/melvin_server/Dockerfile" \
     -t melvin-demo "$REPO_ROOT"
 
 # ------------------------------------------------------------ service

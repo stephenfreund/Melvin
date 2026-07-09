@@ -11,14 +11,24 @@ requires-python = ">=3.8"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Melvin implementation" }]
 keywords = ["verification", "concurrency", "reduction", "rely-guarantee", "boogie"]
-dependencies = ["pytest>=7.0"]
+dependencies = [
+    "pytest>=7.0",
+    # web demo server (demo/server/app.py) + its tests
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "httpx>=0.27",
+]
 
 [project.scripts]
 melvin = "melvin.cli:main"
 melvin-run = "melvin.interp:main"
+melvin-server = "melvin_server.app:main"
 
 [tool.setuptools]
-packages = ["melvin"]
+packages = ["melvin", "melvin_server"]
+
+[tool.setuptools.package-data]
+melvin_server = ["static/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
