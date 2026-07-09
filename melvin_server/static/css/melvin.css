@@ -275,6 +275,13 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .snap-edge-label { font: 10px monospace; fill: currentColor; opacity: .75; }
 .snap-var-box { fill: none; stroke: rgba(100,100,100,.55); stroke-dasharray: 3 2; }
 .snap-var { font: 12px ui-monospace, Menlo, monospace; fill: currentColor; }
+/* a thread's call stack: innermost frame on top, drawn as stacked cards */
+.snap-stack { display: flex; flex-direction: column; gap: 0; }
+.snap-stack .snap-table { border: 1px solid var(--border); border-radius: 4px;
+  padding: 2px 6px 4px; margin: 0; }
+.snap-stack .snap-table + .snap-table { margin-top: -1px; border-top-left-radius: 0;
+  border-top-right-radius: 0; }
+.snap-stack .snap-table:first-child { background: rgba(120,120,220,.07); }
 
 .trace-wrap { display: flex; gap: 14px; align-items: flex-start; }
 /* the step list is user-resizable: drag the grip in its bottom-right corner */

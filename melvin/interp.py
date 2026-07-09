@@ -44,6 +44,19 @@ class ThreadState:
     """One thread: a stack of statements to run, plus its \\old snapshot key."""
     cont: Tuple                     # tuple of AST statement nodes (a stack)
     old_snapshot: Tuple             # frozen store items at the last yield
+    # Active call frames, for display only: (function name, call-site id)
+    # pairs, outermost first; the thread body is the implicit bottom frame.
+    frames: Tuple = ()
+
+
+@dataclass(frozen=True)
+class _Marker:
+    """A continuation marker: `popframe` closes the display call frame opened
+    by call site `sid` when the callee's body is done.  Interned per call site
+    so the DFS state key (which hashes continuation node identities) stays
+    finite."""
+    kind: str
+    sid: int
 
 
 @dataclass
@@ -71,11 +84,17 @@ FINALS_CAP = 100
 class Interpreter:
     def __init__(self, prog: A.Program, max_states: int = 200_000,
                  loop_bound: int = 1000, source: Optional[str] = None):
+        # re-run the checker for its scope tables (which local belongs to
+        # which function), used when rendering per-frame stores
+        from .types import check_types
+        self.ti = check_types(prog)
         self.prog = prog
         self.max_states = max_states
         self.loop_bound = loop_bound
         self.globals = [v.name for v in prog.vars]
         self.source_lines = source.splitlines() if source else None
+        # interned popframe markers (stable identity per call site)
+        self._markers: Dict[int, _Marker] = {}
 
     # ------------------------------------------------------------ store
     def _initial_store(self) -> Dict:
@@ -265,8 +284,10 @@ class Interpreter:
         def reconstruct(key: Tuple) -> List[Dict]:
             steps = []
             while key in pred:
-                key, tid, head, fstore = pred[key]
-                steps.append(self._step_json(tid, head, fstore))
+                key, tid, head, nstate = pred[key]
+                if isinstance(head, _Marker):
+                    continue      # internal frame bookkeeping, not a user step
+                steps.append(self._step_json(tid, head, nstate))
             steps.reverse()
             return steps
 
@@ -302,22 +323,21 @@ class Interpreter:
                 head = ts.cont[0] if ts.cont else None
                 successors = self._step(thread_id, ts, store)
                 for (new_ts, new_store, is_wrong) in successors:
-                    if is_wrong:
-                        fs, fc = finals_json(False)
-                        frozen = self._freeze(new_store)
-                        return ExploreResult(
-                            True, explored, hit_bound=False,
-                            trace=(reconstruct(key)
-                                   + [self._step_json(thread_id, head, frozen)])
-                            if want_trace else None,
-                            finals=fs, finals_complete=fc)
                     new_threads = list(thread_tuple)
                     new_threads[idx] = new_ts
                     nstate = (tuple(new_threads), self._freeze(new_store))
+                    if is_wrong:
+                        fs, fc = finals_json(False)
+                        return ExploreResult(
+                            True, explored, hit_bound=False,
+                            trace=(reconstruct(key)
+                                   + [self._step_json(thread_id, head, nstate)])
+                            if want_trace else None,
+                            finals=fs, finals_complete=fc)
                     nkey = self._state_key(nstate)
                     if nkey not in seen:
                         if nkey not in pred:
-                            pred[nkey] = (key, thread_id, head, nstate[1])
+                            pred[nkey] = (key, thread_id, head, nstate)
                         stack.append(nstate)
         fs, fc = finals_json(True)
         return ExploreResult(False, explored, hit_bound=False,
@@ -354,9 +374,10 @@ class Interpreter:
         head = ts.cont[0] if ts.cont else None
         return f"t{tid}:{type(head).__name__ if head else 'done'}"
 
-    def _step_json(self, tid: int, head, store_after) -> Dict:
+    def _step_json(self, tid: int, head, state) -> Dict:
         """One structured trace step: which thread ran what (with the source
-        line), and the store after the step (a dict or a frozen store)."""
+        line), and the state after the step ((thread tuple, frozen store))."""
+        thread_tuple, frozen_store = state
         line = 0
         text = "done"
         if head is not None:
@@ -368,7 +389,7 @@ class Interpreter:
             else:
                 text = type(head).__name__
         return {"tid": tid, "line": line, "source": text,
-                "store": self.store_json(store_after)}
+                "store": self.store_json(frozen_store, thread_tuple)}
 
     # ------------------------------------------------------ store rendering
     @staticmethod
@@ -385,21 +406,68 @@ class Interpreter:
                 str(Interpreter._fmt_value(x)) for x in v) + "]"
         return str(v)
 
-    def store_json(self, store) -> Dict:
-        """Store-JSON: {"globals": {...}, "threads": {"1": {...}}, "objects": []}.
-        `objects` is populated by the heap-aware interpreter (objects branch)."""
+    def store_json(self, store, thread_states: Optional[Tuple] = None) -> Dict:
+        """Store-JSON: {"globals": {...}, "threads": {...}, "objects": []}.
+        `objects` is populated by the heap-aware interpreter (objects branch).
+
+        Without `thread_states`, each thread's locals are one flat dict.  With
+        the state's ThreadState tuple, each thread instead gets its call
+        stack: a list of {"fn": name, "locals": {...}} frames, outermost (the
+        thread body) first."""
         items = dict(store) if not isinstance(store, dict) else store
         out = {"globals": {}, "threads": {}, "objects": []}
+        flat: Dict[int, Dict[str, object]] = {}
         for k, v in items.items():
             if isinstance(k, str):
                 out["globals"][k] = self._fmt_value(v)
-            elif isinstance(k, tuple) and len(k) == 2 and isinstance(k[0], str):
+            elif (isinstance(k, tuple) and len(k) == 2
+                  and isinstance(k[0], str) and isinstance(k[1], int)):
                 name, tid = k
-                out["threads"].setdefault(str(tid), {})[name] = self._fmt_value(v)
+                flat.setdefault(tid, {})[name] = v
         out["globals"] = dict(sorted(out["globals"].items()))
-        for t in out["threads"]:
-            out["threads"][t] = dict(sorted(out["threads"][t].items()))
+        if thread_states is None:
+            for tid, kv in flat.items():
+                out["threads"][str(tid)] = {n: self._fmt_value(v)
+                                            for n, v in sorted(kv.items())}
+            return out
+        for idx, ts in enumerate(thread_states):
+            tid = idx + 1
+            out["threads"][str(tid)] = self._thread_frames(
+                tid, ts, items, flat.get(tid, {}))
         return out
+
+    _MISSING = object()
+
+    def _thread_frames(self, tid: int, ts: ThreadState, store: Dict,
+                       flat: Dict[str, object]) -> List[Dict]:
+        """The thread's call stack for display: one {"fn", "locals"} dict per
+        active frame, outermost (the thread body) first.  Each frame lists its
+        own scope's locals; a name rebound by an inner call is read from that
+        call's save slot when the interpreter kept one (the flat local model
+        only saves names the callee itself binds)."""
+        metas = [(f"thread:{tid - 1}", "thread", None)]
+        for fname, sid in ts.frames:
+            metas.append((f"fn:{fname}", fname, sid))
+        overrides: Dict[str, object] = {}
+        frames: List[Dict] = [{} for _ in metas]
+        for i in range(len(metas) - 1, -1, -1):     # innermost first
+            scope, label, sid = metas[i]
+            locs = {}
+            for n in sorted(self.ti.scope_locals(scope)):
+                v = overrides.get(n, flat.get(n, self._MISSING))
+                if v is not self._MISSING:
+                    locs[n] = self._fmt_value(v)
+            frames[i] = {"fn": label, "locals": locs}
+            if sid is not None:
+                # names this call bound: outer frames see the saved values
+                callee = self.prog.find_func(label)
+                bound = [p.name for p in getattr(callee, "params", []) or []]
+                if getattr(callee, "cls", None) is not None:
+                    bound.append("this")
+                for n in bound:
+                    overrides[n] = store.get(("save", sid, n, tid),
+                                             self._MISSING)
+        return frames
 
     def _step(self, tid: int, ts: ThreadState, store: Dict):
         """Return a list of (new ThreadState, new store dict, wrong?) successors
@@ -412,19 +480,26 @@ class Interpreter:
 
         def cont(new_head_list, new_store=store, snapshot=ts.old_snapshot):
             new_cont = tuple(new_head_list) + rest
-            return [(ThreadState(new_cont, snapshot), dict(new_store), False)]
+            return [(ThreadState(new_cont, snapshot, ts.frames),
+                     dict(new_store), False)]
 
+        if isinstance(head, _Marker):        # popframe: the call is done
+            return [(ThreadState(rest, ts.old_snapshot, ts.frames[:-1]),
+                     dict(store), False)]
         if isinstance(head, A.Skip):
             return cont([])
         if isinstance(head, A.Yield):
             # a yield takes a step and refreshes the \old snapshot
-            return [(ThreadState(rest, self._freeze(store)), dict(store), False)]
+            return [(ThreadState(rest, self._freeze(store), ts.frames),
+                     dict(store), False)]
         if isinstance(head, A.Wrong):
-            return [(ThreadState(rest, ts.old_snapshot), dict(store), True)]
+            return [(ThreadState(rest, ts.old_snapshot, ts.frames),
+                     dict(store), True)]
         if isinstance(head, A.Assert):
             old = dict(ts.old_snapshot)
             ok = bool(self._eval(head.expr, store, old, tid))
-            return [(ThreadState(rest, ts.old_snapshot), dict(store), not ok)]
+            return [(ThreadState(rest, ts.old_snapshot, ts.frames),
+                     dict(store), not ok)]
         if isinstance(head, A.Assign):
             s2 = dict(store)
             val = self._eval(head.rhs, store, dict(ts.old_snapshot), tid)
@@ -441,7 +516,8 @@ class Interpreter:
             for v in candidates:
                 s2 = dict(store)
                 s2[(head.lhs, tid)] = v
-                outs.append((ThreadState(rest, ts.old_snapshot), s2, False))
+                outs.append((ThreadState(rest, ts.old_snapshot, ts.frames),
+                             s2, False))
             return outs
         if isinstance(head, A.Acquire):
             if store[head.lock] == 0:
@@ -454,17 +530,23 @@ class Interpreter:
         if isinstance(head, A.If):
             succeeded, s2 = self._cond(head.cond, store, tid)
             branch = head.then_body if succeeded else head.else_body
-            return [(ThreadState(tuple(branch) + rest, ts.old_snapshot), s2, False)]
+            return [(ThreadState(tuple(branch) + rest, ts.old_snapshot,
+                                 ts.frames), s2, False)]
         if isinstance(head, A.While):
             succeeded, s2 = self._cond(head.cond, store, tid)
             if succeeded:
                 # run body, then re-enter the SAME while node (stable identity)
                 return [(ThreadState(tuple(head.body) + (head,) + rest,
-                                     ts.old_snapshot), s2, False)]
-            return [(ThreadState(rest, ts.old_snapshot), s2, False)]
+                                     ts.old_snapshot, ts.frames), s2, False)]
+            return [(ThreadState(rest, ts.old_snapshot, ts.frames), s2, False)]
         if isinstance(head, A.Call_):
             callee = self.prog.find_func(head.name)
-            return [(ThreadState(tuple(callee.body) + rest, ts.old_snapshot),
+            sid = id(head)
+            if sid not in self._markers:
+                self._markers[sid] = _Marker("popframe", sid)
+            return [(ThreadState(tuple(callee.body) + (self._markers[sid],) + rest,
+                                 ts.old_snapshot,
+                                 ts.frames + ((head.name, sid),)),
                      dict(store), False)]
         raise InterpError(f"cannot step {type(head).__name__}")
 
