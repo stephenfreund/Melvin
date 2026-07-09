@@ -513,6 +513,21 @@ def test_finals_in_json(capsys):
     assert out["finals_complete"] is True
 
 
+def test_trace_stores_show_call_stack():
+    # trace-step stores show each thread as a stack of call frames, each
+    # frame holding its own scope's locals
+    src = (EXAMPLES / "oracle_safe.mml").read_text()
+    r = _explore(src)
+    steps = r.finals[0]["trace"]
+    deep = [s for s in steps
+            if [f["fn"] for f in s["store"]["threads"][str(s["tid"])]]
+            == ["thread", "w", "add2"]]
+    assert deep, "expected steps inside thread -> w -> add2"
+    inner = deep[-1]["store"]["threads"][str(deep[-1]["tid"])][-1]
+    assert inner["fn"] == "add2"
+    assert "t" in inner["locals"]
+
+
 def test_finals_have_representative_traces():
     src = """
 var int x  non-mover;

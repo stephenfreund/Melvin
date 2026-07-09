@@ -208,10 +208,37 @@ var Snapshot = (function () {
     globals = splitRefs(globals, "");
     if (Object.keys(globals).length) scalars.appendChild(kvTable("globals", globals));
     var threads = (store && store.threads) || {};
+    var usedRefLabels = {};
     Object.keys(threads).sort().forEach(function (t) {
-      var kv = splitRefs(threads[t], "t" + t + ".");
-      if (Object.keys(kv).length)
-        scalars.appendChild(kvTable("t" + t + " locals", kv));
+      var frames = threads[t];
+      if (!Array.isArray(frames)) {           // legacy flat locals
+        var kv = splitRefs(frames, "t" + t + ".");
+        if (Object.keys(kv).length)
+          scalars.appendChild(kvTable("t" + t + " locals", kv));
+        return;
+      }
+      // a call stack: one table per frame, innermost call on top
+      var stackEl = el("div", "snap-stack");
+      for (var i = frames.length - 1; i >= 0; i--) {
+        var fr = frames[i];
+        var title = "t" + t + ": " + fr.fn + (fr.fn === "thread" ? "" : "()");
+        var prefix = "t" + t + ".";
+        if (usedRefLabels[prefix] === undefined) usedRefLabels[prefix] = {};
+        var kv2 = {};
+        Object.keys(fr.locals || {}).forEach(function (k) {
+          var v = String(fr.locals[k]);
+          if (drawing && byId[v]) {
+            var label = prefix + k;
+            if (usedRefLabels[prefix][k]) label = prefix + fr.fn + "." + k;
+            usedRefLabels[prefix][k] = true;
+            refs.push({ label: label, target: v });
+          } else {
+            kv2[k] = fr.locals[k];
+          }
+        });
+        stackEl.appendChild(kvTable(title, kv2));
+      }
+      if (frames.length) scalars.appendChild(stackEl);
     });
     if (scalars.childNodes.length) root.appendChild(scalars);
     if (drawing) {

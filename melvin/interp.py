@@ -60,16 +60,20 @@ class ThreadState:
     """One thread: a stack of statements to run, plus its \\old snapshot key."""
     cont: Tuple                     # tuple of AST statement nodes (a stack)
     old_snapshot: Tuple             # frozen store items at the last yield
+    # Active call frames, for display only: (function name, call-site id)
+    # pairs, outermost first; the thread body is the implicit bottom frame.
+    frames: Tuple = ()
 
 
 @dataclass(frozen=True)
 class _Marker:
-    """A continuation marker for call save/restore, interned per call site so
+    """A continuation marker for call bookkeeping, interned per call site so
     the DFS state key (which hashes continuation node identities) stays
-    finite.  `kind` is "restore" (payload: names to restore) or "bindresult"
-    (payload: the local receiving `result`).  Nested recursive calls through
-    the same site share one save slot, so save/restore is exact only to
-    recursion depth 1 -- adequate for an oracle."""
+    finite.  `kind` is "restore" (payload: names to restore; every call gets
+    one, and it also closes the display call frame) or "bindresult" (payload:
+    the local receiving `result`).  Nested recursive calls through the same
+    site share one save slot, so save/restore is exact only to recursion
+    depth 1 -- adequate for an oracle."""
     kind: str
     payload: object
     sid: int
@@ -102,7 +106,8 @@ class Interpreter:
                  loop_bound: int = 1000, source: Optional[str] = None):
         # (re-)run the checker: it desugars `x = f(args)` into Call_ statements,
         # validates the program, and yields the type tables (nominal array
-        # types, resolved call targets) the heap semantics needs
+        # types, resolved call targets, per-scope locals) that the heap
+        # semantics and the per-frame store rendering need
         from .types import check_types
         self.ti = check_types(prog)
         self.prog = prog
@@ -335,10 +340,10 @@ class Interpreter:
         def reconstruct(key: Tuple) -> List[Dict]:
             steps = []
             while key in pred:
-                key, tid, head, fstore = pred[key]
+                key, tid, head, nstate = pred[key]
                 if isinstance(head, _Marker):
                     continue      # internal call save/restore, not a user step
-                steps.append(self._step_json(tid, head, fstore))
+                steps.append(self._step_json(tid, head, nstate))
             steps.reverse()
             return steps
 
@@ -374,22 +379,21 @@ class Interpreter:
                 head = ts.cont[0] if ts.cont else None
                 successors = self._step(thread_id, ts, store)
                 for (new_ts, new_store, is_wrong) in successors:
-                    if is_wrong:
-                        fs, fc = finals_json(False)
-                        frozen = self._freeze(new_store)
-                        return ExploreResult(
-                            True, explored, hit_bound=False,
-                            trace=(reconstruct(key)
-                                   + [self._step_json(thread_id, head, frozen)])
-                            if want_trace else None,
-                            finals=fs, finals_complete=fc)
                     new_threads = list(thread_tuple)
                     new_threads[idx] = new_ts
                     nstate = (tuple(new_threads), self._freeze(new_store))
+                    if is_wrong:
+                        fs, fc = finals_json(False)
+                        return ExploreResult(
+                            True, explored, hit_bound=False,
+                            trace=(reconstruct(key)
+                                   + [self._step_json(thread_id, head, nstate)])
+                            if want_trace else None,
+                            finals=fs, finals_complete=fc)
                     nkey = self._state_key(nstate)
                     if nkey not in seen:
                         if nkey not in pred:
-                            pred[nkey] = (key, thread_id, head, nstate[1])
+                            pred[nkey] = (key, thread_id, head, nstate)
                         stack.append(nstate)
         fs, fc = finals_json(True)
         return ExploreResult(False, explored, hit_bound=False,
@@ -505,9 +509,10 @@ class Interpreter:
         head = ts.cont[0] if ts.cont else None
         return f"t{tid}:{type(head).__name__ if head else 'done'}"
 
-    def _step_json(self, tid: int, head, store_after) -> Dict:
+    def _step_json(self, tid: int, head, state) -> Dict:
         """One structured trace step: which thread ran what (with the source
-        line), and the store after the step (a dict or a frozen store)."""
+        line), and the state after the step ((thread tuple, frozen store))."""
+        thread_tuple, frozen_store = state
         line = 0
         text = "done"
         if head is not None:
@@ -519,7 +524,7 @@ class Interpreter:
             else:
                 text = type(head).__name__
         return {"tid": tid, "line": line, "source": text,
-                "store": self.store_json(store_after)}
+                "store": self.store_json(frozen_store, thread_tuple)}
 
     # ------------------------------------------------------ store rendering
     @staticmethod
@@ -536,11 +541,16 @@ class Interpreter:
                 str(Interpreter._fmt_value(x)) for x in v) + "]"
         return str(v)
 
-    def store_json(self, store) -> Dict:
-        """Store-JSON: {"globals": {...}, "threads": {"1": {...}}, "objects":
+    def store_json(self, store, thread_states: Optional[Tuple] = None) -> Dict:
+        """Store-JSON: {"globals": {...}, "threads": {...}, "objects":
         [{"id": "#1", "class": "C", "fields": {...}}, ...]}.  Every allocated
         heap object/array is shown (renumbered deterministically); reference
-        values render as the matching "#n" so the UI can draw arrows."""
+        values render as the matching "#n" so the UI can draw arrows.
+
+        Without `thread_states`, each thread's locals are one flat dict.  With
+        the state's ThreadState tuple, each thread instead gets its call
+        stack: a list of {"fn": name, "locals": {...}} frames, outermost (the
+        thread body) first."""
         items = dict(store) if not isinstance(store, dict) else store
 
         # deterministic ids for every allocated object/array
@@ -555,13 +565,14 @@ class Interpreter:
             return self._fmt_value(v)
 
         out = {"globals": {}, "threads": {}, "objects": []}
+        flat: Dict[int, Dict[str, object]] = {}
         for k, v in items.items():
             if isinstance(k, str):
                 out["globals"][k] = fmt(v)
-            elif isinstance(k, tuple) and len(k) == 2 \
-                    and isinstance(k[0], str) and isinstance(k[1], int):
+            elif (isinstance(k, tuple) and len(k) == 2
+                  and isinstance(k[0], str) and isinstance(k[1], int)):
                 name, tid = k
-                out["threads"].setdefault(str(tid), {})[name] = fmt(v)
+                flat.setdefault(tid, {})[name] = v
         for ref, i in idmap.items():
             _tag, t, a = ref
             owner = items.get(("owner", t, a))
@@ -579,9 +590,50 @@ class Interpreter:
                 out["objects"].append({"id": f"#{i}", "class": self._arr_label(t, n),
                                        "allocated_by": owner, "fields": fields})
         out["globals"] = dict(sorted(out["globals"].items()))
-        for t in out["threads"]:
-            out["threads"][t] = dict(sorted(out["threads"][t].items()))
+        if thread_states is None:
+            for tid, kv in flat.items():
+                out["threads"][str(tid)] = {n: fmt(v)
+                                            for n, v in sorted(kv.items())}
+            return out
+        for idx, ts in enumerate(thread_states):
+            tid = idx + 1
+            out["threads"][str(tid)] = self._thread_frames(
+                tid, ts, items, flat.get(tid, {}), fmt)
         return out
+
+    _MISSING = object()
+
+    def _thread_frames(self, tid: int, ts: ThreadState, store: Dict,
+                       flat: Dict[str, object], fmt=None) -> List[Dict]:
+        """The thread's call stack for display: one {"fn", "locals"} dict per
+        active frame, outermost (the thread body) first.  Each frame lists its
+        own scope's locals; a name rebound by an inner call is read from that
+        call's save slot when the interpreter kept one (the flat local model
+        only saves names the callee itself binds)."""
+        fmt = fmt or self._fmt_value
+        metas = [(f"thread:{tid - 1}", "thread", None)]
+        for fname, sid in ts.frames:
+            metas.append((f"fn:{fname}", fname, sid))
+        overrides: Dict[str, object] = {}
+        frames: List[Dict] = [{} for _ in metas]
+        for i in range(len(metas) - 1, -1, -1):     # innermost first
+            scope, label, sid = metas[i]
+            locs = {}
+            for n in sorted(self.ti.scope_locals(scope)):
+                v = overrides.get(n, flat.get(n, self._MISSING))
+                if v is not self._MISSING:
+                    locs[n] = fmt(v)
+            frames[i] = {"fn": label, "locals": locs}
+            if sid is not None:
+                # names this call bound: outer frames see the saved values
+                callee = self.prog.find_func(label)
+                bound = [p.name for p in getattr(callee, "params", []) or []]
+                if getattr(callee, "cls", None) is not None:
+                    bound.append("this")
+                for n in bound:
+                    overrides[n] = store.get(("save", sid, n, tid),
+                                             self._MISSING)
+        return frames
 
     def _step(self, tid: int, ts: ThreadState, store: Dict):
         """Return a list of (new ThreadState, new store dict, wrong?) successors
@@ -591,7 +643,8 @@ class Interpreter:
             return self._step_inner(tid, ts, store)
         except StuckWrong:
             # a run-time fault (null dereference, bad index, bad allocation)
-            return [(ThreadState(ts.cont[1:], ts.old_snapshot), dict(store), True)]
+            return [(ThreadState(ts.cont[1:], ts.old_snapshot, ts.frames),
+                     dict(store), True)]
 
     def _marker(self, sid: int, kind: str, payload) -> "_Marker":
         key = (sid, kind)
@@ -607,10 +660,12 @@ class Interpreter:
 
         def cont(new_head_list, new_store=store, snapshot=ts.old_snapshot):
             new_cont = tuple(new_head_list) + rest
-            return [(ThreadState(new_cont, snapshot), dict(new_store), False)]
+            return [(ThreadState(new_cont, snapshot, ts.frames),
+                     dict(new_store), False)]
 
         if isinstance(head, _Marker):
             s2 = dict(store)
+            frames = ts.frames
             if head.kind == "restore":
                 for name in head.payload:
                     saved = s2.pop(("save", head.sid, name, tid), None)
@@ -618,20 +673,24 @@ class Interpreter:
                         s2.pop((name, tid), None)
                     else:
                         s2[(name, tid)] = saved
+                frames = ts.frames[:-1]      # the call's display frame closes
             else:  # "bindresult"
                 s2[(head.payload, tid)] = s2.get(("result", tid), 0)
-            return cont([], s2)
+            return [(ThreadState(rest, ts.old_snapshot, frames), s2, False)]
         if isinstance(head, A.Skip):
             return cont([])
         if isinstance(head, A.Yield):
             # a yield takes a step and refreshes the \old snapshot
-            return [(ThreadState(rest, self._freeze(store)), dict(store), False)]
+            return [(ThreadState(rest, self._freeze(store), ts.frames),
+                     dict(store), False)]
         if isinstance(head, A.Wrong):
-            return [(ThreadState(rest, ts.old_snapshot), dict(store), True)]
+            return [(ThreadState(rest, ts.old_snapshot, ts.frames),
+                     dict(store), True)]
         if isinstance(head, A.Assert):
             old = dict(ts.old_snapshot)
             ok = bool(self._eval(head.expr, store, old, tid))
-            return [(ThreadState(rest, ts.old_snapshot), dict(store), not ok)]
+            return [(ThreadState(rest, ts.old_snapshot, ts.frames),
+                     dict(store), not ok)]
         if isinstance(head, A.Assign):
             s2 = dict(store)
             if isinstance(head.rhs, A.New):
@@ -688,7 +747,8 @@ class Interpreter:
             for v in candidates:
                 s2 = dict(store)
                 s2[(head.lhs, tid)] = v
-                outs.append((ThreadState(rest, ts.old_snapshot), s2, False))
+                outs.append((ThreadState(rest, ts.old_snapshot, ts.frames),
+                             s2, False))
             return outs
         if isinstance(head, A.Acquire):
             if head.lock_expr is not None:
@@ -715,14 +775,15 @@ class Interpreter:
         if isinstance(head, A.If):
             succeeded, s2 = self._cond(head.cond, store, tid)
             branch = head.then_body if succeeded else head.else_body
-            return [(ThreadState(tuple(branch) + rest, ts.old_snapshot), s2, False)]
+            return [(ThreadState(tuple(branch) + rest, ts.old_snapshot,
+                                 ts.frames), s2, False)]
         if isinstance(head, A.While):
             succeeded, s2 = self._cond(head.cond, store, tid)
             if succeeded:
                 # run body, then re-enter the SAME while node (stable identity)
                 return [(ThreadState(tuple(head.body) + (head,) + rest,
-                                     ts.old_snapshot), s2, False)]
-            return [(ThreadState(rest, ts.old_snapshot), s2, False)]
+                                     ts.old_snapshot, ts.frames), s2, False)]
+            return [(ThreadState(rest, ts.old_snapshot, ts.frames), s2, False)]
         if isinstance(head, A.Call_):
             target = self.ti.call_target.get(id(head), head.name)
             callee = self.prog.find_func(target)
@@ -744,13 +805,14 @@ class Interpreter:
                     s2[("save", sid, p.name, tid)] = s2[(p.name, tid)]
                 s2[(p.name, tid)] = val
                 saved_names.append(p.name)
-            tail = ()
-            if saved_names:
-                tail += (self._marker(sid, "restore", tuple(saved_names)),)
+            # every call gets a restore marker: it restores any saved names
+            # AND closes the call's display frame on the way out
+            tail = (self._marker(sid, "restore", tuple(saved_names)),)
             if head.assign_to is not None and head.assign_to != "result":
                 tail += (self._marker(sid, "bindresult", head.assign_to),)
             return [(ThreadState(tuple(callee.body) + tail + rest,
-                                 ts.old_snapshot), s2, False)]
+                                 ts.old_snapshot,
+                                 ts.frames + ((target, sid),)), s2, False)]
         raise InterpError(f"cannot step {type(head).__name__}")
 
     def _allocate(self, cls: str, store: Dict, tid: int):
