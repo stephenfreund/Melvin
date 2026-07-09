@@ -38,7 +38,9 @@ var Snapshot = (function () {
   }
 
   // Box/table heading for a heap object: "Counter  #1  (alloc t1)".
+  // A `title` property overrides it (used for the identityless "this" box).
   function objTitle(o) {
+    if (o.title) return o.title;
     var t = o.class + "  " + o.id;
     if (o.allocated_by != null) t += "  (alloc t" + o.allocated_by + ")";
     return t;
@@ -140,6 +142,18 @@ var Snapshot = (function () {
     if (opts.title) root.appendChild(el("div", "snap-title", opts.title));
     var scalars = el("div", "snap-scalars");
     var globals = (store && store.globals) || {};
+    // Receiver-relative facts ("this.f", from the hover schematic) have no
+    // heap identity to hang a real diagram on; draw them as one "this" box
+    // rather than rows in the globals table.
+    var thisFields = null, plain = {};
+    Object.keys(globals).forEach(function (k) {
+      if (k.lastIndexOf("this.", 0) === 0) {
+        (thisFields = thisFields || {})[k.slice(5)] = globals[k];
+      } else {
+        plain[k] = globals[k];
+      }
+    });
+    globals = plain;
     if (Object.keys(globals).length) scalars.appendChild(kvTable("globals", globals));
     var threads = (store && store.threads) || {};
     Object.keys(threads).sort().forEach(function (t) {
@@ -147,7 +161,9 @@ var Snapshot = (function () {
         scalars.appendChild(kvTable("t" + t + " locals", threads[t]));
     });
     if (scalars.childNodes.length) root.appendChild(scalars);
-    var objects = (store && store.objects) || [];
+    var objects = ((store && store.objects) || []).slice();
+    if (thisFields)
+      objects.push({ id: "this", class: "this", title: "this", fields: thisFields });
     if (objects.length && typeof dagre !== "undefined") {
       root.appendChild(objectDiagram(objects));
     } else if (objects.length) {
