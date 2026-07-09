@@ -111,7 +111,11 @@
       n.textContent = ex.note;
       pop.appendChild(n);
     }
-    if (m.store && Object.keys(m.store).length) {
+    // The approximate schematic store (m.store) is hidden for now: the
+    // mostly-`?` tables added noise without helping.  The /verify payload
+    // still carries it, so re-enabling is a matter of flipping this flag.
+    var SHOW_POPUP_STORE = false;
+    if (SHOW_POPUP_STORE && m.store && Object.keys(m.store).length) {
       var lbl = document.createElement("div");
       lbl.className = "mover-popup-storelabel";
       lbl.textContent = "store here (approximate):";
