@@ -381,6 +381,81 @@ def test_model_table_heap_rows():
     assert rows["Counter#0.x"] == "2"
 
 
+def test_model_table_array_rows():
+    # `elems_<C>_<fld>` decodes through two Select_ levels (outer map ->
+    # per-array inner map -> per-index element); `len_<C>_<fld>` through one.
+    from melvin.boogie_backend import model_table, _parse_model_block
+    block = [
+        "tid -> 1",
+        "null_Arr_Box_data -> T@Arr_Box_data!val!9",
+        "v_elems_Box_data@2 -> |T@[Arr_Box_data][Int]Int!val!2|",
+        "v_len_Box_data@1 -> |T@[Arr_Box_data]Int!val!1|",
+        "Select_[Arr_Box_data][$int]$int -> {",
+        "  |T@[Arr_Box_data][Int]Int!val!2| T@Arr_Box_data!val!0 -> |T@[Int]Int!val!5|",
+        "  |T@[Arr_Box_data][Int]Int!val!2| T@Arr_Box_data!val!9 -> |T@[Int]Int!val!6|",
+        "  else -> |T@[Int]Int!val!0|",
+        "}",
+        "Select_[$int]$int -> {",
+        "  |T@[Int]Int!val!5| 1 -> 7",
+        "  |T@[Int]Int!val!5| 0 -> 4",
+        "  else -> 0",
+        "}",
+        "Select_[Arr_Box_data]$int -> {",
+        "  |T@[Arr_Box_data]Int!val!1| T@Arr_Box_data!val!0 -> 3",
+        "  else -> 0",
+        "}",
+    ]
+    entries, funcs = _parse_model_block(block)
+    rows = model_table(entries, funcs)
+    d = dict(rows)
+    assert d["Arr_Box_data#0[0]"] == "4"
+    assert d["Arr_Box_data#0[1]"] == "7"
+    assert d["Arr_Box_data#0.length"] == "3"
+    # rows keyed at the null array reference are dropped
+    assert not any(k.startswith("Arr_Box_data#9") for k in d)
+    # element rows come out in index order
+    elem_keys = [k for k, _v in rows if "[" in k]
+    assert elem_keys == ["Arr_Box_data#0[0]", "Arr_Box_data#0[1]"]
+
+
+def test_model_table_null_refs_display_as_null():
+    from melvin.boogie_backend import model_table, _parse_model_block
+    block = ["null_Table -> T@Table!val!1", "v_t@0 -> T@Table!val!1"]
+    entries, funcs = _parse_model_block(block)
+    assert dict(model_table(entries, funcs))["t"] == "null"
+
+
+BAD_ARRAY_POST = """
+class Box {
+  var int[] data  read  both-mover
+                  write both-mover
+                  [i] both-mover;
+}
+atomic
+f() {
+  b = new Box;
+  a = new int[3];
+  b.data = a;
+  a[0] = 4;
+  a[1] = 7;
+  assert a[0] == a[1];
+}
+thread { f(); }
+"""
+
+
+@needs_boogie
+def test_counterexample_array_elements():
+    import re
+    res = check_source(BAD_ARRAY_POST, "arr.mml", counterexample=True)
+    assert not res.ok
+    d = next(x for x in res.diagnostics if "assertion" in x.message)
+    assert d.model
+    names = [n for n, _v in d.model]
+    # the model constrains at least one element of the failing comparison
+    assert any(re.search(r"\[\d+\]$", n) for n in names), names
+
+
 def test_model_table_missing_values_labeled():
     # In-scope variables the model never mentions surface as explicit `?`
     # rows instead of silently disappearing from the table.

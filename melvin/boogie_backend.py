@@ -183,6 +183,14 @@ def model_table(raw: Dict[str, str], funcs: Optional[Dict[str, List]] = None,
                 if len(args) == 2:
                     select[(args[0].strip("|"), args[1].strip("|"))] = val
 
+    # `null_<T> -> val` entries identify each type's null reference: such a
+    # value displays as `null`, and heap rows keyed at a null address are
+    # dropped (they describe no allocated object).
+    nulls = {v.strip() for n, v in raw.items() if n.startswith("null_")}
+
+    def clean(v: str) -> str:
+        return "null" if v.strip().strip("|") in nulls else _clean_value(v)
+
     def heap_rows(var: str, base: str) -> List[Tuple[str, str]]:
         """Decode a field-map variable f_<C>_<fld> into per-object rows."""
         for cname in sorted(class_fields, key=len, reverse=True):
@@ -194,11 +202,40 @@ def model_table(raw: Dict[str, str], funcs: Optional[Dict[str, List]] = None,
                 mapval = mapval.strip("|")
                 out = []
                 for (m, o), val in sorted(select.items()):
-                    if m == mapval:
+                    if m == mapval and o not in nulls:
                         out.append((f"{_clean_value(o)}.{fld}",
-                                    _clean_value(val)))
+                                    clean(val)))
                 return out
         return []
+
+    def _idx_key(i: str):
+        i = _clean_value(i)
+        return (0, int(i)) if i.lstrip("-").isdigit() else (1, i)
+
+    def array_rows(var: str, base: str) -> List[Tuple[str, str]]:
+        """Decode the array heap maps: `elems_<C>_<fld>` ([at][int]T) via a
+        two-level Select_ lookup into `at#k[i]` element rows, and
+        `len_<C>_<fld>` ([at]int) into `at#k.length` rows."""
+        mapval = _last_incarnation(raw, base)
+        if mapval is None:
+            return []
+        mapval = mapval.strip("|")
+        out: List[Tuple[str, str]] = []
+        if var.startswith("len_"):
+            for (m, a), val in sorted(select.items()):
+                if m == mapval and a not in nulls:
+                    out.append((f"{_clean_value(a)}.length", clean(val)))
+            return out
+        # elems: the outer graph yields each array's inner [int]T map value,
+        # the inner graph that map's per-index elements.
+        for (m, a), inner in sorted(select.items()):
+            if m != mapval or a in nulls:
+                continue
+            inner = inner.strip("|")
+            elems = [(i, val) for (m2, i), val in select.items() if m2 == inner]
+            for i, val in sorted(elems, key=lambda e: _idx_key(e[0])):
+                out.append((f"{_clean_value(a)}[{_clean_value(i)}]", clean(val)))
+        return out
 
     bases = sorted({name.partition("@")[0] for name in raw})
     shown = set()
@@ -206,18 +243,21 @@ def model_table(raw: Dict[str, str], funcs: Optional[Dict[str, List]] = None,
         if not base.startswith("v_"):
             continue
         var = base[2:]
-        if var.startswith(("f_", "alloc_", "elems_", "len_")):
+        if var.startswith(("elems_", "len_")):
+            rows.extend(array_rows(var, base))
+            continue
+        if var.startswith(("f_", "alloc_")):
             rows.extend(heap_rows(var, base))
             continue
         if in_scope is not None and var not in in_scope:
             continue                       # out-of-scope internal slot (e.g. result)
         cur = _last_incarnation(raw, base)
         if cur is not None:
-            rows.append((var, _clean_value(cur)))
+            rows.append((var, clean(cur)))
             shown.add(var)
         old = _last_incarnation(raw, f"o_{var}")
         if old is not None and old != cur:
-            rows.append((f"\\old({var})", _clean_value(old)))
+            rows.append((f"\\old({var})", clean(old)))
     if in_scope is not None:
         for var in sorted(set(in_scope) - shown):
             rows.append((var, "?"))

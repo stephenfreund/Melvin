@@ -410,7 +410,8 @@
         cex.appendChild(t);
         var objs = {};
         d.model.forEach(function (row) {
-          var m = /^([A-Za-z_]\w*#\d+)\.(\w+)$/.exec(row[0]);
+          var m = /^([A-Za-z_]\w*#\d+)\.(\w+)$/.exec(row[0]) ||
+                  /^([A-Za-z_]\w*#\d+)(\[-?\d+\])$/.exec(row[0]);
           if (m) {
             if (!objs[m[1]])
               objs[m[1]] = { id: m[1], class: m[1].split("#")[0], fields: {} };
