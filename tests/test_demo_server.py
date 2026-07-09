@@ -200,5 +200,9 @@ def test_run_reports_finals(client):
     res = client.post("/api/run", json={"source": read_example("oracle_safe.mml")})
     body = res.json()
     assert body["status"] == "safe"
-    assert body["finals"] == [{"globals": {"m": 0, "x": 4}, "objects": []}]
+    assert len(body["finals"]) == 1
+    final = body["finals"][0]
+    assert final["globals"] == {"m": 0, "x": 4}
+    assert final["objects"] == []
+    assert final["trace"], "finals carry a representative interleaving"
     assert body["finals_complete"] is True

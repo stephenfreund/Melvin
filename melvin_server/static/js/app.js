@@ -472,40 +472,7 @@
         var label = document.createElement("div");
         label.textContent = "One such interleaving (click a step to see the store after it):";
         out.appendChild(label);
-        var wrap = document.createElement("div");
-        wrap.className = "trace-wrap";
-        var ol = document.createElement("ol");
-        ol.className = "trace-list";
-        var snapPane = document.createElement("div");
-        snapPane.className = "trace-snap";
-        var selected = null;
-        res.trace.forEach(function (step) {
-          var li = document.createElement("li");
-          if (step && typeof step === "object") {
-            li.textContent = "t" + step.tid + "  line " + step.line + ":  " + step.source;
-            li.className = "trace-step";
-            li.addEventListener("click", function () {
-              if (selected) selected.classList.remove("selected");
-              selected = li;
-              li.classList.add("selected");
-              snapPane.innerHTML = "";
-              snapPane.appendChild(Snapshot.render(step.store || {},
-                { title: "after step: t" + step.tid + " line " + step.line }));
-              if (step.line) {
-                editor.setCursor({ line: step.line - 1, ch: 0 });
-                editor.scrollIntoView(null, 120);
-              }
-            });
-          } else {
-            li.textContent = String(step);
-          }
-          ol.appendChild(li);
-        });
-        wrap.appendChild(ol);
-        wrap.appendChild(snapPane);
-        out.appendChild(wrap);
-        var last = ol.querySelector("li.trace-step:last-child");
-        if (last) last.click();
+        out.appendChild(traceEl(res.trace, { bad: true, selectLast: true }));
       }
     } else if (res.status === "unknown") {
       endBusy("warn", "unknown");
@@ -527,6 +494,49 @@
     renderFinals(out, res);
   }
 
+  /* A clickable interleaving: step list + store snapshot pane.
+     opts.bad marks the last step as the failing one (red);
+     opts.selectLast auto-selects it. */
+  function traceEl(trace, opts) {
+    opts = opts || {};
+    var wrap = document.createElement("div");
+    wrap.className = "trace-wrap" + (opts.bad ? " trace-bad" : "");
+    var ol = document.createElement("ol");
+    ol.className = "trace-list";
+    var snapPane = document.createElement("div");
+    snapPane.className = "trace-snap";
+    var selected = null;
+    trace.forEach(function (step) {
+      var li = document.createElement("li");
+      if (step && typeof step === "object") {
+        li.textContent = "t" + step.tid + "  line " + step.line + ":  " + step.source;
+        li.className = "trace-step";
+        li.addEventListener("click", function () {
+          if (selected) selected.classList.remove("selected");
+          selected = li;
+          li.classList.add("selected");
+          snapPane.innerHTML = "";
+          snapPane.appendChild(Snapshot.render(step.store || {},
+            { title: "after step: t" + step.tid + " line " + step.line }));
+          if (step.line) {
+            editor.setCursor({ line: step.line - 1, ch: 0 });
+            editor.scrollIntoView(null, 120);
+          }
+        });
+      } else {
+        li.textContent = String(step);
+      }
+      ol.appendChild(li);
+    });
+    wrap.appendChild(ol);
+    wrap.appendChild(snapPane);
+    if (opts.selectLast) {
+      var last = ol.querySelector("li.trace-step:last-child");
+      if (last) last.click();
+    }
+    return wrap;
+  }
+
   function renderFinals(out, res) {
     if (!res.finals || !res.finals.length) return;
     var head = document.createElement("div");
@@ -538,7 +548,27 @@
     var list = document.createElement("div");
     list.className = "finals-list";
     res.finals.forEach(function (st, i) {
-      list.appendChild(Snapshot.render(st, { title: "final state " + (i + 1) }));
+      var cell = document.createElement("div");
+      cell.className = "final-cell";
+      cell.appendChild(Snapshot.render(st, { title: "final state " + (i + 1) }));
+      if (st.trace && st.trace.length) {
+        var det = document.createElement("details");
+        det.className = "final-trace";
+        var sum = document.createElement("summary");
+        sum.textContent = "an interleaving that reaches this state";
+        det.appendChild(sum);
+        var holder = document.createElement("div");
+        det.appendChild(holder);
+        var built = false;
+        det.addEventListener("toggle", function () {
+          if (det.open && !built) {
+            built = true;
+            holder.appendChild(traceEl(st.trace, {}));
+          }
+        });
+        cell.appendChild(det);
+      }
+      list.appendChild(cell);
     });
     out.appendChild(list);
   }

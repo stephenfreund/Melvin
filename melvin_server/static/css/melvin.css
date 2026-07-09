@@ -198,7 +198,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .trace-list { list-style: none; margin: 8px 0 0; padding: 0;
   font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
 .trace-list li { padding: 2px 8px; border-left: 3px solid var(--border); }
-.trace-list li:last-child { border-left-color: var(--bad); font-weight: 600; }
+.trace-bad .trace-list li:last-child { border-left-color: var(--bad); font-weight: 600; }
 
 /* -------------------------------------------------- editor annotations */
 
@@ -285,6 +285,10 @@ li.trace-step.selected { background: rgba(120,120,220,.25); }
 
 .finals-head { font-weight: 600; margin-top: 12px; }
 .finals-list { display: flex; flex-wrap: wrap; gap: 16px; }
+.final-cell { display: flex; flex-direction: column; gap: 4px; }
+.final-trace summary { cursor: pointer; font-size: 12px; opacity: .75; }
+.final-trace[open] summary { opacity: 1; }
+.final-trace .trace-wrap { margin-top: 6px; }
 .diag-cex { margin-top: 4px; }
 .diag-cex-label { font-size: 11px; opacity: .7; }
 .diag-cex table { border-collapse: collapse; font-family: monospace; font-size: 12px; }
