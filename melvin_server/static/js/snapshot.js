@@ -90,17 +90,31 @@ var Snapshot = (function () {
         height: height,
       });
     });
-    var eidx = 0;
+    var eidx = 0, edgeSrc = {};   // edge name -> its source row
     boxes.forEach(function (b) {
-      b.sections.forEach(function (s) {
-        s.rows.forEach(function (r) {
-          if (r.ref != null && byId[r.ref])
-            g.setEdge(b.id, r.ref, { field: r.label }, "e" + (eidx++));
+      b.sections.forEach(function (s, si) {
+        s.rows.forEach(function (r, ri) {
+          if (r.ref != null && byId[r.ref]) {
+            var name = "e" + (eidx++);
+            edgeSrc[name] = { box: b, si: si, ri: ri, label: r.label };
+            g.setEdge(b.id, r.ref, {}, name);
+          }
         });
       });
     });
 
     dagre.layout(g);
+
+    // pixel position of a ref row's bullet, so its arrow starts right there
+    function rowAnchor(src) {
+      var n = g.node(src.box.id);
+      var x = n.x - n.width / 2, y = n.y - n.height / 2;
+      var cy = y + (src.si + 1) * TITLE_H + src.ri * ROW_H + ROW_H / 2;
+      for (var i = 0; i < src.si; i++)
+        cy += src.box.sections[i].rows.length * ROW_H;
+      return { dot: { x: x + PAD + (src.label.length + 1.4) * CHAR_W, y: cy },
+               exit: { x: x + n.width, y: cy } };
+    }
 
     var gr = g.graph();
     var svg = svgEl("svg", {
@@ -117,24 +131,6 @@ var Snapshot = (function () {
     marker.appendChild(svgEl("path", { d: "M0,0 L8,4 L0,8 z", class: "snap-arrowhead" }));
     defs.appendChild(marker);
     svg.appendChild(defs);
-
-    // edges under the boxes
-    g.edges().forEach(function (e) {
-      var pts = g.edge(e).points;
-      var d = pts.map(function (p, i) {
-        return (i === 0 ? "M" : "L") + p.x.toFixed(1) + "," + p.y.toFixed(1);
-      }).join(" ");
-      svg.appendChild(svgEl("path", {
-        d: d, class: "snap-edge", "marker-end": "url(#" + arrowId + ")",
-      }));
-      var lbl = g.edge(e).field;
-      if (lbl && pts.length) {
-        var mid = pts[Math.floor(pts.length / 2)];
-        var t = svgEl("text", { x: mid.x, y: mid.y - 3, class: "snap-edge-label" });
-        t.textContent = lbl;
-        svg.appendChild(t);
-      }
-    });
 
     boxes.forEach(function (b) {
       var n = g.node(b.id);
@@ -168,6 +164,23 @@ var Snapshot = (function () {
         });
       });
       svg.appendChild(grp);
+    });
+
+    // edges on top of the boxes: each starts at its row's bullet, runs
+    // horizontally out of the box, then follows dagre's routing
+    g.edges().forEach(function (e) {
+      var src = edgeSrc[e.name];
+      var pts = g.edge(e).points.slice(1);
+      if (src) {
+        var a = rowAnchor(src);
+        pts = [a.dot, a.exit].concat(pts);
+      }
+      var d = pts.map(function (p, i) {
+        return (i === 0 ? "M" : "L") + p.x.toFixed(1) + "," + p.y.toFixed(1);
+      }).join(" ");
+      svg.appendChild(svgEl("path", {
+        d: d, class: "snap-edge", "marker-end": "url(#" + arrowId + ")",
+      }));
     });
     return svg;
   }
