@@ -509,8 +509,12 @@
     trace.forEach(function (step) {
       var li = document.createElement("li");
       if (step && typeof step === "object") {
-        li.textContent = "t" + step.tid + "  line " + step.line + ":  " + step.source;
-        li.className = "trace-step";
+        var mark = step.kind === "call" ? "→ " :
+                   step.kind === "return" ? "← " : "";
+        li.textContent = mark + "t" + step.tid + "  line " + step.line + ":  " + step.source;
+        li.className = "trace-step" +
+          (step.kind === "call" || step.kind === "return"
+            ? " trace-" + step.kind : "");
         li.addEventListener("click", function () {
           if (selected) selected.classList.remove("selected");
           selected = li;

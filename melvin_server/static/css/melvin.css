@@ -290,6 +290,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   resize: both; border: 1px solid var(--border); border-radius: 4px; }
 .trace-snap { flex: 1 1 auto; min-width: 0; position: sticky; top: 0; }
 li.trace-step { cursor: pointer; border-radius: 3px; padding: 0 4px; }
+li.trace-call, li.trace-return { font-style: italic; opacity: .9; }
 li.trace-step:hover { background: rgba(120,120,220,.12); }
 li.trace-step.selected { background: rgba(120,120,220,.25); }
 

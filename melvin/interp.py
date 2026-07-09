@@ -51,11 +51,16 @@ class ThreadState:
 
 @dataclass(frozen=True)
 class _Marker:
-    """A continuation marker: `popframe` closes the display call frame opened
-    by call site `sid` when the callee's body is done.  Interned per call site
-    so the DFS state key (which hashes continuation node identities) stays
-    finite."""
+    """A continuation marker for call bookkeeping, interned per call site so
+    the DFS state key (which hashes continuation node identities) stays
+    finite.  `kind` is "restore": its payload names the callee's frame locals,
+    saved at the call and restored (or dropped, when they had no prior value)
+    when the callee's body is done; it also closes the display call frame.
+    Nested recursive calls through the same site share one save slot, so
+    save/restore is exact only to recursion depth 1 -- adequate for an
+    oracle."""
     kind: str
+    payload: object
     sid: int
 
 
@@ -93,8 +98,10 @@ class Interpreter:
         self.loop_bound = loop_bound
         self.globals = [v.name for v in prog.vars]
         self.source_lines = source.splitlines() if source else None
-        # interned popframe markers (stable identity per call site)
-        self._markers: Dict[int, _Marker] = {}
+        # interned continuation markers (stable identity per call site)
+        self._markers: Dict[Tuple[int, str], _Marker] = {}
+        # call-site id -> the Call_ node, for rendering "return from f()"
+        self._call_nodes: Dict[int, A.Call_] = {}
 
     # ------------------------------------------------------------ store
     def _initial_store(self) -> Dict:
@@ -286,7 +293,9 @@ class Interpreter:
             while key in pred:
                 key, tid, head, nstate = pred[key]
                 if isinstance(head, _Marker):
-                    continue      # internal frame bookkeeping, not a user step
+                    if head.kind == "restore":     # an explicit return step
+                        steps.append(self._return_json(tid, head, nstate))
+                    continue                       # other markers are internal
                 steps.append(self._step_json(tid, head, nstate))
             steps.reverse()
             return steps
@@ -376,7 +385,8 @@ class Interpreter:
 
     def _step_json(self, tid: int, head, state) -> Dict:
         """One structured trace step: which thread ran what (with the source
-        line), and the state after the step ((thread tuple, frozen store))."""
+        line), and the state after the step ((thread tuple, frozen store)).
+        A `Call_` step is tagged "call" so traces show where calls happen."""
         thread_tuple, frozen_store = state
         line = 0
         text = "done"
@@ -388,8 +398,27 @@ class Interpreter:
                 text = self.source_lines[line - 1].strip()
             else:
                 text = type(head).__name__
-        return {"tid": tid, "line": line, "source": text,
+        kind = "call" if isinstance(head, A.Call_) else "step"
+        return {"tid": tid, "line": line, "source": text, "kind": kind,
                 "store": self.store_json(frozen_store, thread_tuple)}
+
+    def _return_json(self, tid: int, marker: "_Marker", state) -> Dict:
+        """An explicit "return" trace step for a restore marker: the callee's
+        body is done, its frame is gone, and control is back at the call site
+        (whose line the step carries, so clicking it jumps there)."""
+        thread_tuple, frozen_store = state
+        call = self._call_nodes.get(marker.sid)
+        name = self._call_display_name(call)
+        line = 0
+        if call is not None and getattr(call, "span", None) is not None:
+            line = call.span.start.line
+        return {"tid": tid, "line": line, "source": f"return from {name}()",
+                "kind": "return",
+                "store": self.store_json(frozen_store, thread_tuple)}
+
+    @staticmethod
+    def _call_display_name(call) -> str:
+        return call.name if call is not None else "?"
 
     # ------------------------------------------------------ store rendering
     @staticmethod
@@ -442,9 +471,9 @@ class Interpreter:
                        flat: Dict[str, object]) -> List[Dict]:
         """The thread's call stack for display: one {"fn", "locals"} dict per
         active frame, outermost (the thread body) first.  Each frame lists its
-        own scope's locals; a name rebound by an inner call is read from that
-        call's save slot when the interpreter kept one (the flat local model
-        only saves names the callee itself binds)."""
+        own scope's locals; every call saves its whole frame, so an outer
+        frame's value shadowed by an inner call is read exactly from that
+        call's save slot."""
         metas = [(f"thread:{tid - 1}", "thread", None)]
         for fname, sid in ts.frames:
             metas.append((f"fn:{fname}", fname, sid))
@@ -459,12 +488,10 @@ class Interpreter:
                     locs[n] = self._fmt_value(v)
             frames[i] = {"fn": label, "locals": locs}
             if sid is not None:
-                # names this call bound: outer frames see the saved values
-                callee = self.prog.find_func(label)
-                bound = [p.name for p in getattr(callee, "params", []) or []]
-                if getattr(callee, "cls", None) is not None:
-                    bound.append("this")
-                for n in bound:
+                # this frame's locals were saved at its call site: outer
+                # frames see the saved values (or nothing, if a name had no
+                # value before the call)
+                for n in self._frame_names(label):
                     overrides[n] = store.get(("save", sid, n, tid),
                                              self._MISSING)
         return frames
@@ -483,9 +510,16 @@ class Interpreter:
             return [(ThreadState(new_cont, snapshot, ts.frames),
                      dict(new_store), False)]
 
-        if isinstance(head, _Marker):        # popframe: the call is done
+        if isinstance(head, _Marker):        # restore: the call is done
+            s2 = dict(store)
+            for name in head.payload:
+                saved = s2.pop(("save", head.sid, name, tid), self._MISSING)
+                if saved is self._MISSING:
+                    s2.pop((name, tid), None)
+                else:
+                    s2[(name, tid)] = saved
             return [(ThreadState(rest, ts.old_snapshot, ts.frames[:-1]),
-                     dict(store), False)]
+                     s2, False)]
         if isinstance(head, A.Skip):
             return cont([])
         if isinstance(head, A.Yield):
@@ -542,13 +576,33 @@ class Interpreter:
         if isinstance(head, A.Call_):
             callee = self.prog.find_func(head.name)
             sid = id(head)
-            if sid not in self._markers:
-                self._markers[sid] = _Marker("popframe", sid)
-            return [(ThreadState(tuple(callee.body) + (self._markers[sid],) + rest,
+            self._call_nodes[sid] = head
+            # a fresh frame: save every local of the callee's scope and clear
+            # it, so the callee cannot see or clobber same-named caller locals
+            s2 = dict(store)
+            saved_names = self._frame_names(head.name)
+            for n in saved_names:
+                if (n, tid) in s2:
+                    s2[("save", sid, n, tid)] = s2.pop((n, tid))
+            marker = self._marker(sid, "restore", tuple(saved_names))
+            return [(ThreadState(tuple(callee.body) + (marker,) + rest,
                                  ts.old_snapshot,
                                  ts.frames + ((head.name, sid),)),
-                     dict(store), False)]
+                     s2, False)]
         raise InterpError(f"cannot step {type(head).__name__}")
+
+    def _marker(self, sid: int, kind: str, payload) -> "_Marker":
+        key = (sid, kind)
+        if key not in self._markers:
+            self._markers[key] = _Marker(kind, payload, sid)
+        return self._markers[key]
+
+    def _frame_names(self, fname: str) -> Tuple[str, ...]:
+        """The locals that make up a frame of function `fname` (its scope's
+        names; `result` is the cross-frame return channel and stays out)."""
+        names = set(self.ti.scope_locals(f"fn:{fname}"))
+        names.discard("result")
+        return tuple(sorted(names))
 
     def _cond(self, c: A.Cond, store: Dict, tid: int):
         """Evaluate a conditional action; return (succeeded?, new_store)."""
@@ -640,14 +694,18 @@ def main(argv=None) -> int:
         }))
         return 1 if result.wrong_reachable else (3 if result.hit_bound else 0)
 
+    def print_step(step, indent):
+        mark = {"call": "→ ", "return": "← "}.get(step.get("kind"), "  ")
+        print(f"{indent}{mark}t{step['tid']}  {args.file}:{step['line']}  "
+              f"{step['source']}")
+
     if result.wrong_reachable:
         print(f"UNSAFE: some interleaving reaches `wrong` "
               f"(explored {result.states_explored} states).")
         if args.trace and result.trace:
             print("  failing interleaving:")
             for step in result.trace:
-                print(f"    t{step['tid']}  {args.file}:{step['line']}  "
-                      f"{step['source']}")
+                print_step(step, "    ")
     elif result.hit_bound:
         print(f"UNKNOWN: hit the {args.max_states}-state bound without reaching "
               f"`wrong` (raise --max-states to explore further).")
@@ -667,8 +725,7 @@ def main(argv=None) -> int:
             if args.trace and st.get("trace"):
                 print("    via:")
                 for step in st["trace"]:
-                    print(f"      t{step['tid']}  {args.file}:{step['line']}  "
-                          f"{step['source']}")
+                    print_step(step, "      ")
 
     return 1 if result.wrong_reachable else (3 if result.hit_bound else 0)
 

@@ -308,6 +308,45 @@ def test_trace_stores_show_call_stack():
     assert "t" in inner["locals"]
 
 
+def test_trace_has_call_and_return_steps():
+    # traces mark calls ("call") and returns ("return from f()" at the
+    # call-site line); in a completed trace they balance
+    src = (EXAMPLES / "oracle_safe.mml").read_text()
+    r = _explore(src)
+    steps = r.finals[0]["trace"]
+    kinds = [s["kind"] for s in steps]
+    assert "call" in kinds and "return" in kinds
+    assert kinds.count("call") == kinds.count("return")
+    ret = next(s for s in steps if s["kind"] == "return")
+    assert ret["source"].startswith("return from ")
+    assert ret["line"] > 0
+
+
+def test_callee_locals_do_not_clobber_caller():
+    # every call saves/restores its whole frame, so a callee writing a
+    # same-named local cannot change the caller's value
+    src = """
+var int x  non-mover;
+func g() { t = 99; x = t; }
+func f() {
+  yield;
+  t = 1;
+  g();
+  assert t == 1;
+  yield;
+}
+thread { f(); }
+"""
+    r = _explore(src)
+    assert not r.wrong_reachable
+    # and while g runs, f's frame still shows its own t
+    steps = r.finals[0]["trace"]
+    in_g = next(s for s in steps
+                if [f["fn"] for f in s["store"]["threads"]["1"]][-1] == "g"
+                and s["store"]["threads"]["1"][-1]["locals"].get("t") == 99)
+    assert in_g["store"]["threads"]["1"][-2]["locals"]["t"] == 1
+
+
 def test_finals_have_representative_traces():
     src = """
 var int x  non-mover;
