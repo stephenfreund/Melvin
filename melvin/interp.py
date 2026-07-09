@@ -336,6 +336,8 @@ class Interpreter:
             steps = []
             while key in pred:
                 key, tid, head, fstore = pred[key]
+                if isinstance(head, _Marker):
+                    continue      # internal call save/restore, not a user step
                 steps.append(self._step_json(tid, head, fstore))
             steps.reverse()
             return steps

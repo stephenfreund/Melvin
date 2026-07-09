@@ -205,6 +205,28 @@ thread { f(); }
     assert by_line[9]["store"]["x"] == "?"
 
 
+def test_finals_trace_skips_internal_markers():
+    # method calls push internal _Marker continuations for save/restore;
+    # those must not surface as trace steps
+    src = """
+class Cell {
+  var int v  non-mover;
+  atomic set(int n) { this.v = n; }
+}
+var Cell c  non-mover;
+init c == null;
+func w() { yield; a = new Cell; a.set(3); c = a; yield; }
+thread { w(); }
+"""
+    r = _explore(src)
+    assert r.finals
+    for f in r.finals:
+        assert f["trace"]
+        for s in f["trace"]:
+            assert s["source"] != "_Marker"
+            assert s["line"] > 0
+
+
 # ---------------------------------------- heap-aware feature extensions
 
 def test_finals_isomorphic_heaps_collapse():
