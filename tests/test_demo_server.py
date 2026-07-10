@@ -45,6 +45,16 @@ def test_examples_list_matches_manifest(client):
         assert e["title"] and e["blurb"] and e["group"]
 
 
+def test_example_groups_cover_all_examples(client):
+    groups = client.get("/api/example-groups").json()
+    keys = [g["key"] for g in groups]
+    assert len(keys) == len(set(keys))
+    for g in groups:
+        assert g["title"] and g["blurb"]
+    listed = client.get("/api/examples").json()
+    assert {e["group"] for e in listed} <= set(keys)
+
+
 def test_every_manifest_example_is_served(client):
     for e in MANIFEST:
         res = client.get(f"/api/examples/{e['name']}")

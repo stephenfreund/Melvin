@@ -518,7 +518,9 @@ class Interpreter:
     def _step_json(self, tid: int, head, state) -> Dict:
         """One structured trace step: which thread ran what (with the source
         line), and the state after the step ((thread tuple, frozen store)).
-        A `Call_` step is tagged "call" so traces show where calls happen."""
+        A `Call_` step is tagged "call" so traces show where calls happen.
+        `depth` is the call depth of the frame the statement runs in (thread
+        body = 0), so displays can indent by nesting level."""
         thread_tuple, frozen_store = state
         line = 0
         text = "done"
@@ -531,13 +533,18 @@ class Interpreter:
             else:
                 text = type(head).__name__
         kind = "call" if isinstance(head, A.Call_) else "step"
+        depth = len(thread_tuple[tid - 1].frames)
+        if kind == "call":
+            depth -= 1        # the call statement itself runs in the caller
         return {"tid": tid, "line": line, "source": text, "kind": kind,
+                "depth": depth,
                 "store": self.store_json(frozen_store, thread_tuple)}
 
     def _return_json(self, tid: int, marker: "_Marker", state) -> Dict:
         """An explicit "return" trace step for a restore marker: the callee's
         body is done, its frame is gone, and control is back at the call site
-        (whose line the step carries, so clicking it jumps there)."""
+        (whose line the step carries, so clicking it jumps there).  The step's
+        depth is the callee's, so it closes the callee's indented block."""
         thread_tuple, frozen_store = state
         call = self._call_nodes.get(marker.sid)
         name = self._call_display_name(call)
@@ -546,6 +553,7 @@ class Interpreter:
             line = call.span.start.line
         return {"tid": tid, "line": line, "source": f"return from {name}()",
                 "kind": "return",
+                "depth": len(thread_tuple[tid - 1].frames) + 1,
                 "store": self.store_json(frozen_store, thread_tuple)}
 
     def _call_display_name(self, call) -> str:
@@ -961,9 +969,11 @@ def main(argv=None) -> int:
         return 1 if result.wrong_reachable else (3 if result.hit_bound else 0)
 
     def print_step(step, indent):
-        mark = {"call": "→ ", "return": "← "}.get(step.get("kind"), "  ")
-        print(f"{indent}{mark}t{step['tid']}  {args.file}:{step['line']}  "
-              f"{step['source']}")
+        # indentation reflects call depth: a callee's steps sit two spaces
+        # deeper than its caller's
+        nest = "  " * step.get("depth", 0)
+        print(f"{indent}t{step['tid']}  {args.file}:{step['line']}  "
+              f"{nest}{step['source']}")
 
     if result.wrong_reachable:
         print(f"UNSAFE: some interleaving reaches `wrong` "

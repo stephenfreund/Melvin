@@ -194,7 +194,7 @@
   }
 
   function closeMenus() {
-    document.querySelectorAll(".menu.open").forEach(function (m) {
+    document.querySelectorAll(".menu.open, .submenu.open").forEach(function (m) {
       m.classList.remove("open");
     });
   }
@@ -202,25 +202,46 @@
   // ------------------------------------------------------------- examples
 
   function loadExamplesMenu() {
-    fetch("api/examples").then(function (r) { return r.json(); }).then(function (list) {
+    Promise.all([
+      fetch("api/example-groups").then(function (r) { return r.json(); }),
+      fetch("api/examples").then(function (r) { return r.json(); }),
+    ]).then(function (res) {
+      var groups = res[0], list = res[1];
       var menu = $("#examples-menu");
       menu.innerHTML = "";
-      var lastGroup = null;
-      list.forEach(function (ex) {
-        if (ex.group !== lastGroup) {
-          lastGroup = ex.group;
-          var g = document.createElement("div");
-          g.className = "menu-group";
-          g.textContent = ex.group;
-          menu.appendChild(g);
-        }
-        var b = document.createElement("button");
-        b.className = "menu-item menu-example";
-        b.innerHTML = "<b></b><small></small>";
-        b.querySelector("b").textContent = ex.title;
-        b.querySelector("small").textContent = ex.blurb;
-        b.addEventListener("click", function () { loadExample(ex.name); });
-        menu.appendChild(b);
+      groups.forEach(function (g) {
+        var members = list.filter(function (e) { return e.group === g.key; });
+        if (!members.length) return;
+        var sub = document.createElement("div");
+        sub.className = "submenu";
+        var head = document.createElement("div");
+        head.className = "menu-item submenu-head";
+        head.innerHTML = "<b></b><small></small>";
+        head.querySelector("b").textContent = g.title;
+        head.querySelector("small").textContent = g.blurb;
+        // click toggles too, for touch devices (hover opens it on desktop)
+        head.addEventListener("click", function (e) {
+          e.stopPropagation();
+          var wasOpen = sub.classList.contains("open");
+          menu.querySelectorAll(".submenu.open").forEach(function (s) {
+            s.classList.remove("open");
+          });
+          if (!wasOpen) sub.classList.add("open");
+        });
+        var fly = document.createElement("div");
+        fly.className = "submenu-list";
+        members.forEach(function (ex) {
+          var b = document.createElement("button");
+          b.className = "menu-item menu-example";
+          b.innerHTML = "<b></b><small></small>";
+          b.querySelector("b").textContent = ex.title;
+          b.querySelector("small").textContent = ex.blurb;
+          b.addEventListener("click", function () { loadExample(ex.name); });
+          fly.appendChild(b);
+        });
+        sub.appendChild(head);
+        sub.appendChild(fly);
+        menu.appendChild(sub);
       });
     }).catch(function () {
       $("#examples-menu").innerHTML = "<span class='menu-loading'>could not load examples</span>";
@@ -522,9 +543,10 @@
     trace.forEach(function (step) {
       var li = document.createElement("li");
       if (step && typeof step === "object") {
-        var mark = step.kind === "call" ? "→ " :
-                   step.kind === "return" ? "← " : "";
-        li.textContent = mark + "t" + step.tid + "  line " + step.line + ":  " + step.source;
+        // indentation reflects call depth: a callee's steps sit two spaces
+        // deeper than its caller's
+        var nest = new Array((step.depth || 0) + 1).join("  ");
+        li.textContent = "t" + step.tid + "  line " + step.line + ":  " + nest + step.source;
         li.className = "trace-step" +
           (step.kind === "call" || step.kind === "return"
             ? " trace-" + step.kind : "");

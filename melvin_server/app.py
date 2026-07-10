@@ -42,7 +42,7 @@ from melvin.diagnostics import NO_SPAN, MelvinError
 from melvin.parser import parse
 from melvin.types import check_types
 
-from .examples_manifest import BY_NAME, EXAMPLES
+from .examples_manifest import BY_NAME, EXAMPLES, GROUPS
 
 # --------------------------------------------------------------- configuration
 
@@ -178,6 +178,12 @@ async def health():
 @app.get("/api/examples")
 async def examples():
     return [{k: e[k] for k in ("name", "title", "blurb", "group")} for e in EXAMPLES]
+
+
+@app.get("/api/example-groups")
+async def example_groups():
+    """The Examples menu categories, in display order."""
+    return GROUPS
 
 
 @app.get("/api/examples/{name}")

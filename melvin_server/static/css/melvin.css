@@ -92,6 +92,23 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .menu-example small { display: block; color: var(--fg-dim); font-size: 12px; }
 .menu-loading { display: block; padding: 8px 10px; color: var(--fg-dim); }
 
+/* Examples menu: one flyout submenu per category (opens on hover or click) */
+#examples-menu { overflow: visible; max-height: none; min-width: 250px; }
+.submenu { position: relative; }
+.submenu-head { position: relative; cursor: pointer; padding-right: 24px; }
+.submenu-head::after { content: "\25B8"; position: absolute; right: 10px;
+  top: 7px; color: var(--fg-dim); }
+.submenu-head small { display: block; color: var(--fg-dim); font-size: 12px; }
+.submenu-list {
+  display: none; position: absolute; left: 100%; top: -7px; z-index: 60;
+  min-width: 320px; max-width: 400px;
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.25); padding: 6px;
+}
+.submenu:hover > .submenu-list, .submenu.open > .submenu-list { display: block; }
+.submenu:hover > .submenu-head, .submenu.open > .submenu-head { background: var(--bg-hover); }
+
 .toolbar { margin-left: auto; display: flex; gap: 8px; }
 
 /* ------------------------------------------------------------- buttons */
@@ -197,7 +214,8 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 
 .trace-list { list-style: none; margin: 8px 0 0; padding: 0;
   font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
-.trace-list li { padding: 2px 8px; border-left: 3px solid var(--border); }
+.trace-list li { padding: 2px 8px; border-left: 3px solid var(--border);
+  white-space: pre-wrap; }
 .trace-bad .trace-list li:last-child { border-left-color: var(--bad); font-weight: 600; }
 
 /* -------------------------------------------------- editor annotations */
