@@ -509,9 +509,10 @@
     trace.forEach(function (step) {
       var li = document.createElement("li");
       if (step && typeof step === "object") {
-        var mark = step.kind === "call" ? "→ " :
-                   step.kind === "return" ? "← " : "";
-        li.textContent = mark + "t" + step.tid + "  line " + step.line + ":  " + step.source;
+        // indentation reflects call depth: a callee's steps sit two spaces
+        // deeper than its caller's
+        var nest = new Array((step.depth || 0) + 1).join("  ");
+        li.textContent = "t" + step.tid + "  line " + step.line + ":  " + nest + step.source;
         li.className = "trace-step" +
           (step.kind === "call" || step.kind === "return"
             ? " trace-" + step.kind : "");

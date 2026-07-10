@@ -320,6 +320,11 @@ def test_trace_has_call_and_return_steps():
     ret = next(s for s in steps if s["kind"] == "return")
     assert ret["source"].startswith("return from ")
     assert ret["line"] > 0
+    # indentation data: a callee's steps are one level deeper than the call
+    i = kinds.index("call")
+    assert steps[i + 1]["depth"] == steps[i]["depth"] + 1
+    # the matching return closes at the callee's depth
+    assert ret["depth"] >= 1
 
 
 def test_callee_locals_do_not_clobber_caller():
