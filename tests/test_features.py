@@ -513,6 +513,36 @@ def test_counterexample_array_elements():
     assert any(re.search(r"\[\d+\]$", n) for n in names), names
 
 
+def test_model_table_object_graph_from_defaults():
+    # a field the failing path never pins down is read from its Select_
+    # graph's default (`else`) row, so every referenced object gets a full
+    # field list and the diagram can show the whole object graph
+    from melvin.boogie_backend import model_table, _parse_model_block
+    block = ["tid -> 1",
+             "null_Cell -> T@Cell!val!1",
+             "v_s@0 -> T@Cell!val!0",
+             "v_f_Cell_v@1 -> |T@[Cell]Int!val!0|",
+             "Select_[Cell]$int -> {",
+             "  else -> 6",
+             "}"]
+    entries, funcs = _parse_model_block(block)
+    rows = dict(model_table(entries, funcs, {"Cell": {"v": "int"}}))
+    assert rows["s"] == "Cell#0"
+    assert rows["Cell#0.v"] == "6"
+
+
+def test_model_table_unconstrained_fields_show_question_mark():
+    # no usable graph at all: the object still appears, fields as `?`
+    from melvin.boogie_backend import model_table, _parse_model_block
+    block = ["tid -> 1",
+             "null_Cell -> T@Cell!val!1",
+             "v_s@0 -> T@Cell!val!0"]
+    entries, funcs = _parse_model_block(block)
+    rows = dict(model_table(entries, funcs, {"Cell": {"v": "int"}}))
+    assert rows["s"] == "Cell#0"
+    assert rows["Cell#0.v"] == "?"
+
+
 def test_model_table_missing_values_labeled():
     # In-scope variables the model never mentions surface as explicit `?`
     # rows instead of silently disappearing from the table.

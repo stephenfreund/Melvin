@@ -439,13 +439,22 @@
                   /^([A-Za-z_]\w*#\d+)(\[-?\d+\])$/.exec(row[0]);
           if (m) {
             if (!objs[m[1]])
-              objs[m[1]] = { id: m[1], class: m[1].split("#")[0], fields: {} };
+              objs[m[1]] = { id: m[1], class: m[1].split("#")[0],
+                             title: m[1], fields: {} };   // id embeds the class
             objs[m[1]].fields[m[2]] = row[1];
           }
         });
         var objList = Object.keys(objs).map(function (k) { return objs[k]; });
+        // reference-valued variables join the diagram as a box with arrows
+        var vars = {};
+        d.model.forEach(function (row) {
+          if (objs[row[1]] && row[0].indexOf(".") < 0 && row[0].indexOf("[") < 0)
+            vars[row[0]] = row[1];
+        });
         if (objList.length)
-          cex.appendChild(Snapshot.render({ globals: {}, threads: {}, objects: objList }));
+          cex.appendChild(Snapshot.render(
+            { globals: vars, threads: {}, objects: objList },
+            { scalarsTitle: "variables" }));
         if (d.model.some(function (row) { return row[1] === "?"; })) {
           var note = document.createElement("div");
           note.className = "diag-cex-label";

@@ -95,7 +95,7 @@ _EFF_LETTER = {0: "Y", 1: "B", 2: "R", 3: "L", 4: "N", 5: "E"}
 def _parse_model_block(lines: List[str]) -> Tuple[Dict[str, str], Dict[str, List]]:
     """Parse a `*** MODEL` block into (scalar entries, function graphs).
     Scalars are name -> value; each function graph is a list of
-    (arg-tuple, value) rows (its `else` row is dropped)."""
+    (arg-tuple, value) rows, with its default row kept as (("else",), value)."""
     out: Dict[str, str] = {}
     funcs: Dict[str, List] = {}
     fname: Optional[str] = None
@@ -105,8 +105,11 @@ def _parse_model_block(lines: List[str]) -> Tuple[Dict[str, str], Dict[str, List
             if line == "}":
                 fname = None
                 continue
-            # row format: `arg1 arg2 ... -> value`
-            if "->" in line and not line.startswith("else"):
+            # row format: `arg1 arg2 ... -> value` (or `else -> value`)
+            if line.startswith("else") and "->" in line:
+                funcs[fname].append((("else",),
+                                     line.split("->", 1)[1].strip()))
+            elif "->" in line:
                 argstr, val = line.rsplit("->", 1)
                 funcs[fname].append((tuple(argstr.split()), val.strip()))
             continue
@@ -175,21 +178,39 @@ def model_table(raw: Dict[str, str], funcs: Optional[Dict[str, List]] = None,
         code = int(_clean_value(eff))
         rows.append(("eff", _EFF_LETTER.get(code, str(code))))
 
-    # index all two-argument Select_ rows: (map value, index value) -> value
+    # index all two-argument Select_ rows: (map value, index value) -> value,
+    # and each Select_ graph's default (`else`) row when it is a plain value
+    # (in a first-order model the default IS the value of every unlisted
+    # lookup, so it fills in fields the failing path never pinned down)
     select: Dict[Tuple[str, str], str] = {}
+    elses: Dict[str, str] = {}
     for name, frows in funcs.items():
         if name.startswith("Select_"):
             for args, val in frows:
                 if len(args) == 2:
                     select[(args[0].strip("|"), args[1].strip("|"))] = val
+                elif args == ("else",) and not val.lstrip().startswith("("):
+                    elses[name] = val
 
     # `null_<T> -> val` entries identify each type's null reference: such a
     # value displays as `null`, and heap rows keyed at a null address are
     # dropped (they describe no allocated object).
     nulls = {v.strip() for n, v in raw.items() if n.startswith("null_")}
 
+    # every non-null object reference we display, so the full object graph
+    # can be synthesized afterwards: "C#k" -> (type name, raw model value)
+    seen_objs: Dict[str, Tuple[str, str]] = {}
+
     def clean(v: str) -> str:
-        return "null" if v.strip().strip("|") in nulls else _clean_value(v)
+        v = v.strip().strip("|")
+        if v in nulls:
+            return "null"
+        m = _OPAQUE_RE.match(v)
+        if m and (m.group("type") in class_fields
+                  or m.group("type").startswith("Arr_")):
+            disp = f"{m.group('type')}#{m.group('n')}"
+            seen_objs[disp] = (m.group("type"), v)
+        return _clean_value(v)
 
     def heap_rows(var: str, base: str) -> List[Tuple[str, str]]:
         """Decode a field-map variable f_<C>_<fld> into per-object rows."""
@@ -203,8 +224,7 @@ def model_table(raw: Dict[str, str], funcs: Optional[Dict[str, List]] = None,
                 out = []
                 for (m, o), val in sorted(select.items()):
                     if m == mapval and o not in nulls:
-                        out.append((f"{_clean_value(o)}.{fld}",
-                                    clean(val)))
+                        out.append((f"{clean(o)}.{fld}", clean(val)))
                 return out
         return []
 
@@ -224,7 +244,7 @@ def model_table(raw: Dict[str, str], funcs: Optional[Dict[str, List]] = None,
         if var.startswith("len_"):
             for (m, a), val in sorted(select.items()):
                 if m == mapval and a not in nulls:
-                    out.append((f"{_clean_value(a)}.length", clean(val)))
+                    out.append((f"{clean(a)}.length", clean(val)))
             return out
         # elems: the outer graph yields each array's inner [int]T map value,
         # the inner graph that map's per-index elements.
@@ -234,7 +254,7 @@ def model_table(raw: Dict[str, str], funcs: Optional[Dict[str, List]] = None,
             inner = inner.strip("|")
             elems = [(i, val) for (m2, i), val in select.items() if m2 == inner]
             for i, val in sorted(elems, key=lambda e: _idx_key(e[0])):
-                out.append((f"{_clean_value(a)}[{_clean_value(i)}]", clean(val)))
+                out.append((f"{clean(a)}[{_clean_value(i)}]", clean(val)))
         return out
 
     bases = sorted({name.partition("@")[0] for name in raw})
@@ -258,6 +278,43 @@ def model_table(raw: Dict[str, str], funcs: Optional[Dict[str, List]] = None,
         old = _last_incarnation(raw, f"o_{var}")
         if old is not None and old != cur:
             rows.append((f"\\old({var})", clean(old)))
+
+    # Every referenced object gets its FULL field list, so the diagram shows
+    # the whole object graph: a field the failing path never pinned down is
+    # read from its Select_ graph's default row, or shown as `?`.  clean()
+    # can discover new references while synthesizing, so iterate to fixpoint.
+    def field_lookup(cname: str, fld: str, fty: str, rawref: str,
+                     graph_prefix: str = "f") -> Optional[str]:
+        base = (f"v_{graph_prefix}_{cname}_{fld}" if graph_prefix == "f"
+                else f"v_len_{cname[4:]}")
+        mapval = _last_incarnation(raw, base)
+        if mapval is not None:
+            val = select.get((mapval.strip("|"), rawref))
+            if val is not None:
+                return val
+        token = {"int": "$int", "bool": "$bool"}.get(fty, fty)
+        return elses.get(f"Select_[{cname}]{token}")
+
+    while True:
+        have = {n for n, _v in rows}
+        added = []
+        for disp in sorted(seen_objs):
+            cname, rawref = seen_objs[disp]
+            if cname in class_fields:
+                for fld, fty in sorted(class_fields[cname].items()):
+                    if f"{disp}.{fld}" not in have:
+                        val = field_lookup(cname, fld, fty, rawref)
+                        added.append((f"{disp}.{fld}",
+                                      clean(val) if val is not None else "?"))
+            elif cname.startswith("Arr_"):
+                if not any(n.startswith(disp) for n in have):
+                    val = field_lookup(cname, "length", "int", rawref, "len")
+                    added.append((f"{disp}.length",
+                                  clean(val) if val is not None else "?"))
+        if not added:
+            break
+        rows.extend(added)
+
     if in_scope is not None:
         for var in sorted(set(in_scope) - shown):
             rows.append((var, "?"))

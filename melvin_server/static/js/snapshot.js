@@ -251,7 +251,8 @@ var Snapshot = (function () {
     var boxes = [];
     if (Object.keys(globals).length)
       boxes.push({ id: "@globals", kind: "scope",
-                   sections: [{ title: "globals", rows: rowsOf(globals) }] });
+                   sections: [{ title: opts.scalarsTitle || "globals",
+                                rows: rowsOf(globals) }] });
     Object.keys(threads).sort().forEach(function (t) {
       var frames = threads[t];
       if (!Array.isArray(frames)) frames = [{ fn: "locals", locals: frames }];
