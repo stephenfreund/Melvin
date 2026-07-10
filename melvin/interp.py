@@ -702,12 +702,21 @@ def main(argv=None) -> int:
         }))
         return 1 if result.wrong_reachable else (3 if result.hit_bound else 0)
 
+    # each thread gets its own color on a terminal (blue, red, green, ...)
+    tid_colors = ["\033[34m", "\033[31m", "\033[32m", "\033[35m",
+                  "\033[36m", "\033[33m"]
+    use_color = sys.stdout.isatty()
+
     def print_step(step, indent):
         # indentation reflects call depth: a callee's steps sit two spaces
         # deeper than its caller's
         nest = "  " * step.get("depth", 0)
-        print(f"{indent}t{step['tid']}  {args.file}:{step['line']}  "
-              f"{nest}{step['source']}")
+        text = (f"{indent}t{step['tid']}  {args.file}:{step['line']}  "
+                f"{nest}{step['source']}")
+        if use_color:
+            c = tid_colors[(step["tid"] - 1) % len(tid_colors)]
+            text = f"{c}{text}\033[0m"
+        print(text)
 
     if result.wrong_reachable:
         print(f"UNSAFE: some interleaving reaches `wrong` "

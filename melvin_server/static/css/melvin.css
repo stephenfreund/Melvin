@@ -19,6 +19,13 @@
   --warn-bg: #fff8e1;
   --navbar-bg: #23272e;
   --navbar-fg: #f0f2f5;
+  /* per-thread trace colors */
+  --tid-1: #1f5fd0;
+  --tid-2: #b3261e;
+  --tid-3: #1a7f37;
+  --tid-4: #8033b0;
+  --tid-5: #0e7d80;
+  --tid-6: #a35a00;
 }
 
 html[data-theme="dark"] {
@@ -38,6 +45,13 @@ html[data-theme="dark"] {
   --warn-bg: #33290f;
   --navbar-bg: #15181c;
   --navbar-fg: #f0f2f5;
+  /* per-thread trace colors (brighter on dark) */
+  --tid-1: #6ea8ff;
+  --tid-2: #ff7b72;
+  --tid-3: #56d364;
+  --tid-4: #d2a8ff;
+  --tid-5: #4dd0d0;
+  --tid-6: #e3b341;
 }
 
 * { box-sizing: border-box; }
@@ -216,6 +230,13 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
 .trace-list li { padding: 2px 8px; border-left: 3px solid var(--border);
   white-space: pre-wrap; }
+/* each thread's steps in their own color (palette cycles for tid > 6) */
+li.trace-tid-1 { color: var(--tid-1); }
+li.trace-tid-2 { color: var(--tid-2); }
+li.trace-tid-3 { color: var(--tid-3); }
+li.trace-tid-4 { color: var(--tid-4); }
+li.trace-tid-5 { color: var(--tid-5); }
+li.trace-tid-6 { color: var(--tid-6); }
 .trace-bad .trace-list li:last-child { border-left-color: var(--bad); font-weight: 600; }
 
 /* -------------------------------------------------- editor annotations */
