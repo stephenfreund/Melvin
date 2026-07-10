@@ -229,7 +229,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .trace-list { list-style: none; margin: 8px 0 0; padding: 0;
   font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
 .trace-list li { padding: 2px 8px; border-left: 3px solid var(--border);
-  white-space: pre-wrap; }
+  white-space: pre; }    /* no wrapping: long lines scroll horizontally */
 /* each thread's steps in their own color (palette cycles for tid > 6) */
 li.trace-tid-1 { color: var(--tid-1); }
 li.trace-tid-2 { color: var(--tid-2); }
