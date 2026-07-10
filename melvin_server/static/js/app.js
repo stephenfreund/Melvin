@@ -548,6 +548,7 @@
         var nest = new Array((step.depth || 0) + 1).join("  ");
         li.textContent = "t" + step.tid + "  line " + step.line + ":  " + nest + step.source;
         li.className = "trace-step" +
+          " trace-tid-" + (((step.tid - 1) % 6) + 1) +   // per-thread color
           (step.kind === "call" || step.kind === "return"
             ? " trace-" + step.kind : "");
         li.addEventListener("click", function () {
