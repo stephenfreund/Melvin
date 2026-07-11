@@ -158,6 +158,13 @@ they are asserted one reducible sequence at a time.
   per-step store snapshots, final-state panels, and counterexample tables;
   heap objects render as box-and-arrow SVG diagrams (`snapshot.js` +
   vendored dagre).
+* Demo guided tour (`js/tour.js`, vendored driver.js): 14 steps that drive
+  the app itself (load examples, press Verify/Run) through the
+  `window.MelvinApp` API exported at the bottom of `app.js`. Entry points:
+  navbar Tour button, `#tour` URL hash, one-time first-visit toast
+  (`localStorage` key `melvin-tour-seen`). Gotcha: driver.js puts
+  `overflow:hidden` on the active element's *parent*; melvin.css un-clips
+  `.menu` so the spotlighted Examples dropdown isn't clipped away.
 
 ## Web demo
 

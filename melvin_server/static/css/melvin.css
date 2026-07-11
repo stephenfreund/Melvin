@@ -19,6 +19,8 @@
   --warn-bg: #fff8e1;
   --navbar-bg: #23272e;
   --navbar-fg: #f0f2f5;
+  /* floating popups and heap-diagram boxes */
+  --panel-bg: #ffffff;
   /* per-thread trace colors */
   --tid-1: #1f5fd0;
   --tid-2: #b3261e;
@@ -45,6 +47,8 @@ html[data-theme="dark"] {
   --warn-bg: #33290f;
   --navbar-bg: #15181c;
   --navbar-fg: #f0f2f5;
+  /* floating popups and heap-diagram boxes */
+  --panel-bg: #2d333b;
   /* per-thread trace colors (brighter on dark) */
   --tid-1: #6ea8ff;
   --tid-2: #ff7b72;
@@ -343,3 +347,56 @@ li.trace-step.selected { background: rgba(120,120,220,.25); }
 .diag-cex-label { font-size: 11px; opacity: .7; }
 .diag-cex table { border-collapse: collapse; font-family: monospace; font-size: 12px; }
 .diag-cex td { border: 1px solid rgba(128,128,128,.35); padding: 1px 8px; }
+
+/* ------------------------------------------------------------- tour */
+
+/* While the tour is active, let the app's own popups escape the dimming
+   overlay (driver.js draws it at z-index 10000). */
+.driver-active .mover-popup { z-index: 10001; }
+.driver-active .menu.open { z-index: 10001; }
+
+/* driver.js puts overflow:hidden!important on the active element's parent,
+   which would clip a spotlighted dropdown to its button-sized .menu wrapper;
+   undo it (this selector out-specifies driver's :not(body):has(...) rule). */
+.menu:has(> .driver-active-element) { overflow: visible !important; }
+
+/* driver.js popover, dark theme (defaults are white-on-light) */
+html[data-theme="dark"] .driver-popover {
+  background-color: var(--bg-soft); color: var(--fg);
+}
+html[data-theme="dark"] .driver-popover-title { color: var(--fg); }
+html[data-theme="dark"] .driver-popover-description,
+html[data-theme="dark"] .driver-popover-progress-text { color: var(--fg-dim); }
+html[data-theme="dark"] .driver-popover-close-btn { color: var(--fg-dim); }
+html[data-theme="dark"] .driver-popover-close-btn:hover,
+html[data-theme="dark"] .driver-popover-close-btn:focus { color: var(--fg); }
+html[data-theme="dark"] .driver-popover-footer button {
+  background-color: var(--bg); color: var(--fg);
+  border-color: var(--border); text-shadow: none;
+}
+html[data-theme="dark"] .driver-popover-footer button:hover,
+html[data-theme="dark"] .driver-popover-footer button:focus {
+  background-color: var(--bg-hover);
+}
+/* arrow: recolor the base, re-blank the three non-pointing sides */
+html[data-theme="dark"] .driver-popover-arrow { border-color: var(--bg-soft); }
+html[data-theme="dark"] .driver-popover-arrow-side-left {
+  border-right-color: transparent; border-bottom-color: transparent; border-top-color: transparent; }
+html[data-theme="dark"] .driver-popover-arrow-side-right {
+  border-left-color: transparent; border-bottom-color: transparent; border-top-color: transparent; }
+html[data-theme="dark"] .driver-popover-arrow-side-top {
+  border-right-color: transparent; border-bottom-color: transparent; border-left-color: transparent; }
+html[data-theme="dark"] .driver-popover-arrow-side-bottom {
+  border-left-color: transparent; border-top-color: transparent; border-right-color: transparent; }
+
+.driver-popover code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+
+/* first-visit "take the tour" toast */
+.tour-toast {
+  position: fixed; right: 16px; bottom: 16px; z-index: 500;
+  max-width: 300px; padding: 12px 14px; font-size: 13.5px;
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.25);
+}
+.tour-toast-actions { display: flex; gap: 8px; margin-top: 10px; }

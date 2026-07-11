@@ -249,7 +249,7 @@
   }
 
   function loadExample(name) {
-    fetch("api/examples/" + encodeURIComponent(name))
+    return fetch("api/examples/" + encodeURIComponent(name))
       .then(function (r) {
         if (!r.ok) throw new Error("could not load " + name);
         return r.json();
@@ -355,11 +355,11 @@
   }
 
   function verify() {
-    if (busy) return;
+    if (busy) return Promise.resolve();
     startBusy("verifying");
     selectTab("output");
-    postJSON("api/verify", { source: editor.getValue(),
-                             counterexample: true })
+    return postJSON("api/verify", { source: editor.getValue(),
+                                    counterexample: true })
       .then(renderVerify)
       .catch(function (err) {
         endBusy("bad", "error");
@@ -481,10 +481,10 @@
   // ------------------------------------------------------------- run
 
   function run() {
-    if (busy) return;
+    if (busy) return Promise.resolve();
     startBusy("running");
     selectTab("trace");
-    postJSON("api/run", { source: editor.getValue() })
+    return postJSON("api/run", { source: editor.getValue() })
       .then(renderRun)
       .catch(function (err) {
         endBusy("bad", "error");
@@ -738,6 +738,18 @@
   $("#btn-verify").addEventListener("click", verify);
   $("#btn-run").addEventListener("click", run);
   $("#btn-share").addEventListener("click", share);
+
+  // Minimal API for the guided tour (js/tour.js): drive the app
+  // programmatically and observe its state.  Not a stable public interface.
+  window.MelvinApp = {
+    loadExample: loadExample,     // returns a promise
+    verify: verify,               // returns a promise (resolves even on failure)
+    run: run,                     // returns a promise (resolves even on failure)
+    selectTab: selectTab,
+    closeMenus: closeMenus,
+    editor: function () { return editor; },
+    currentFile: function () { return currentName; },
+  };
   $("#btn-download-bpl").addEventListener("click", function () {
     var blob = new Blob([lastBoogie], { type: "text/plain" });
     var a = document.createElement("a");

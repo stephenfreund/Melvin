@@ -7,6 +7,7 @@
   <link rel="icon" href="melvin.png">
   <link rel="stylesheet" href="vendor/codemirror/codemirror.css">
   <link rel="stylesheet" href="vendor/codemirror/material-darker.css">
+  <link rel="stylesheet" href="vendor/driverjs/driver.css">
   <link rel="stylesheet" href="css/melvin.css">
 </head>
 <body>
@@ -18,7 +19,7 @@
     <span class="brand-sub">a verifier for Mover Logic</span>
   </div>
   <nav class="menus">
-    <div class="menu">
+    <div class="menu" id="menu-examples">
       <button class="menu-btn" aria-haspopup="true">Examples &#9662;</button>
       <div class="menu-list" id="examples-menu"><span class="menu-loading">loading…</span></div>
     </div>
@@ -45,6 +46,7 @@
     <button id="btn-verify" class="btn primary" title="Verify (Ctrl/Cmd-Enter)">Verify</button>
     <button id="btn-run" class="btn" title="Run under all interleavings (bounded)">Run</button>
     <button id="btn-share" class="btn" title="Copy a link to this program">Share</button>
+    <button id="btn-tour" class="btn" title="A guided tour of the demo">Tour</button>
   </div>
 </header>
 
@@ -91,8 +93,10 @@
 <script src="vendor/codemirror/codemirror.js"></script>
 <script src="vendor/codemirror/matchbrackets.js"></script>
 <script src="vendor/dagre.min.js"></script>
+<script src="vendor/driverjs/driver.js.iife.js"></script>
 <script src="js/mml-mode.js"></script>
 <script src="js/snapshot.js"></script>
 <script src="js/app.js"></script>
+<script src="js/tour.js"></script>
 </body>
 </html>

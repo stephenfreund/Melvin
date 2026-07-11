@@ -78,6 +78,20 @@ def test_index_served(client):
     assert "Melvin" in res.text
 
 
+def test_tour_assets_served(client):
+    index = client.get("/").text
+    for path in ("js/tour.js",
+                 "vendor/driverjs/driver.js.iife.js",
+                 "vendor/driverjs/driver.css"):
+        assert path in index
+        assert client.get(f"/{path}").status_code == 200
+    # the tour drives the app through this exported API
+    app_js = client.get("/js/app.js").text
+    assert "window.MelvinApp" in app_js
+    tour_js = client.get("/js/tour.js").text
+    assert "btn-tour" in tour_js
+
+
 # ------------------------------------------------- verify: no prover needed
 
 def test_verify_front_end_error_is_structured(client):
