@@ -393,3 +393,25 @@ back to ~96%.
    spec-level sequences.
 5. **interp.py state-space growth** with heaps; keep `max_states` and add
    address canonicalization only if the oracle examples time out.
+
+---
+
+## 6. Note — totality of partial actions (`paper-fixes` branch)
+
+M-action's totality side condition (`e ⊑ L` requires the action total) is
+implemented by *ascription*, not by a standalone "is A total?" check: a
+partial (blocking) action's exact mover is composed through
+`bumpEff`/`effects.bump_not_left`, so it is never ascribed an effect in the
+left-mover region, and post-commit placement is caught by the ordinary
+`eff != E` assert (see `emit_acquire` → `_emit_mover(partial=True)`,
+`examples/post_commit_acquire.mml`). Today `acquire` is the language's only
+partial action — conditional `cas` tests are total as a success/failure
+pair, and M-if/M-while carry no totality condition — so ascription and a
+real totality check coincide.
+
+**If the language ever grows another partial construct** (a general
+`wait until e` / `await` / user-defined blocking primitive), its lowering
+path must also pass `partial=True` (and mirror the bump in
+`_stmt_static` and `annotate.py`, as acquire does). Grep for
+`partial=True` to find the pattern; `test_acquire_effect_is_bumped_for_totality`
+pins the expected Boogie output.
