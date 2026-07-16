@@ -1,6 +1,10 @@
-// A loop whose body and exit are both-movers only: REJECTED at analysis time,
-// because a reducible loop may not lie entirely in the both/left-mover region
-// (left-mover termination requirement of M-while).
+// A loop whose body and exit are both-movers only.  M-while states its
+// effect antecedent as an upper bound ((M(A1,P);e1)*;M(A2,P) <= e) with the
+// side condition that the ascribed e is not <= L, so the loop is ascribed
+// the least larger effect R (a right-mover) and VERIFIES: its iterations
+// cannot commit, so looping forever before the commit point is harmless.
+// Placed *after* a commit point, the same loop is rejected -- see
+// post_commit_loop.mml.
 var int x  both-mover if m == tid;
 lock m  write right-mover if \old(m) == 0 && m == tid
         write left-mover  if \old(m) == tid && m == 0;

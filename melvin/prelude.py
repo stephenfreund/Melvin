@@ -12,7 +12,7 @@ It defines:
 
 from __future__ import annotations
 
-from .effects import Effect, seq, leq
+from .effects import Effect, bump_not_left, seq, leq
 
 _CODE = {Effect.Y: 0, Effect.B: 1, Effect.R: 2, Effect.L: 3, Effect.N: 4, Effect.E: 5}
 ALL = [Effect.Y, Effect.B, Effect.R, Effect.L, Effect.N, Effect.E]
@@ -65,12 +65,28 @@ def _leq_function() -> str:
     return f"function {{:inline}} leqEff(a: int, b: int) returns (bool) {{ {rec(0)} }}"
 
 
+def _bump_function() -> str:
+    """Emit `function bumpEff(int) returns(int)`: the least effect above the
+    argument that is not <= L (transcribed from `effects.bump_not_left`).
+    Used for partial (blocking) actions, whose ascribed effect must lie
+    outside the left-mover region (M-action's totality side condition)."""
+    def rec(i: int) -> str:
+        if i == len(ALL):
+            return str(E_CODE)  # unreachable default
+        a = ALL[i]
+        val = _CODE[bump_not_left(a)]
+        return f"(if a == {_CODE[a]} then {val} else {rec(i + 1)})"
+
+    return f"function {{:inline}} bumpEff(a: int) returns (int) {{ {rec(0)} }}"
+
+
 def prelude() -> str:
     parts = [
         "// ==== Mover Logic Boogie prelude ====",
         "// Effect codes: Y=0 B=1 R=2 L=3 N=4 E=5",
         _seq_function(),
         _leq_function(),
+        _bump_function(),
         "",
         "// even() used by the counter example",
         "function {:inline} even(n: int) returns (bool) { n mod 2 == 0 }",

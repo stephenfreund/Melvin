@@ -202,8 +202,10 @@ def test_lower_records_unknown_functions_in_header():
     assert "function userpred(int) returns (bool);" in em.text()
 
 
-def test_both_mover_loop_rejected_at_lowering():
-    # A loop that is entirely both-movers violates left-mover termination.
+def test_both_mover_loop_ascribed_right_mover():
+    # M-while states its effect antecedent as an upper bound with the side
+    # condition e not <= L, so a both-mover loop lowers with its effect
+    # ascribed (bumped) to R rather than being rejected.
     src = r"""
         var int x both-mover if m == tid;
         lock m write right-mover if \old(m)==0 && m==tid
@@ -215,9 +217,26 @@ def test_both_mover_loop_rejected_at_lowering():
         }
     """
     prog = parse(src)
-    with pytest.raises(TypeError_) as exc:
-        lower_program(prog, check_types(prog))
-    assert "terminate" in str(exc.value)
+    text = lower_program(prog, check_types(prog)).text()
+    assert "ascribed loop effect R" in text
+
+
+def test_acquire_effect_is_bumped_for_totality():
+    # A blocking acquire may not carry an effect <= L (M-action's totality
+    # side condition): its exact mover is composed through bumpEff.
+    src = r"""
+        var int x both-mover if m == tid;
+        lock m write right-mover if \old(m)==0 && m==tid
+               write left-mover if \old(m)==tid && m==0;
+        atomic requires true ensures true f() { acquire(m); release(m); }
+    """
+    prog = parse(src)
+    text = lower_program(prog, check_types(prog)).text()
+    acquire_block = text.split("assume pre_m == 0;")[1].split("v_m := 0;")[0]
+    assert "mv := bumpEff(mv);" in acquire_block
+    # release is total: no bump on its mover
+    release_block = text.split("v_m := 0;")[1]
+    assert "bumpEff" not in release_block
 
 
 def test_lower_nonatomic_call_path():
@@ -257,5 +276,6 @@ def test_stmt_static_control_flow_and_call():
     ctx = _Ctx("fn:f", prog.find_func("f"), atomic=True)
     body = prog.find_func("f").body
     assert low._stmt_static(body[0], ctx) == Effect.B     # if: join(B, B)
-    assert low._stmt_static(body[1], ctx) == Effect.B     # while over both-movers
+    # while over both-movers: ascribed the least effect not <= L, i.e. R
+    assert low._stmt_static(body[1], ctx) == Effect.R
     assert low._stmt_static(body[2], ctx) == Effect.N     # call to atomic g (default N)

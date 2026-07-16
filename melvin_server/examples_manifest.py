@@ -76,6 +76,9 @@ EXAMPLES = [
     {"name": "assert_pass.mml", "title": "Assertion (holds)",
      "blurb": "An assertion the verifier proves.",
      "group": "features"},
+    {"name": "both_mover_loop.mml", "title": "Both-mover loop",
+     "blurb": "A both-mover loop ascribed a right-mover effect (M-while's upper bound).",
+     "group": "features"},
 
     # -- rejected: races & locking ---------------------------------------------
     {"name": "racy_bad.mml", "title": "Data race",
@@ -92,8 +95,11 @@ EXAMPLES = [
     {"name": "assert_fail.mml", "title": "Assertion (fails)",
      "blurb": "An assertion that need not hold.",
      "group": "bad-spec"},
-    {"name": "both_mover_loop.mml", "title": "Left-mover loop",
-     "blurb": "A both-mover-only loop (left-mover termination fails).",
+    {"name": "post_commit_loop.mml", "title": "Loop after commit",
+     "blurb": "A loop placed after the commit point (a loop's effect is never below a left-mover).",
+     "group": "bad-spec"},
+    {"name": "post_commit_acquire.mml", "title": "Acquire after commit",
+     "blurb": "A blocking acquire after the commit point (M-action's totality condition).",
      "group": "bad-spec"},
     {"name": "rely_not_transitive.mml", "title": "Non-transitive rely",
      "blurb": "A per-step-bounded rely that is not transitively closed.",

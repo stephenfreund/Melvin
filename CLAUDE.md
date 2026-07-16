@@ -54,9 +54,19 @@ shells out to the executable.
   (`\old` in R at a yield), `ce_` (`\old` in a callee's Q). Ghost int `eff` tracks
   the running effect; `assert eff != E` after each action enforces reducibility.
 * Actions compose the **exact, state-sensitive** mover (an `if/else` over spec
-  clauses) into `eff`. Loops use a havoc-cut with an exact per-iteration `eff ⊑ R`
-  check plus a static approximation for the surrounding effect / termination side
-  condition (`_loop_iter_static`).
+  clauses) into `eff`. The paper's rules state their effect antecedents as
+  *upper bounds* (`M(A,P) ⊑ e`), so the exact minimal effect is a valid — and
+  optimal — ascription. Loops use a havoc-cut with an exact per-iteration
+  `eff ⊑ R` check (M-while's `M(A₁,P);e₁ ⊑ R` antecedent) plus a static
+  approximation for the surrounding effect (`_loop_iter_static`).
+* Two places compose a **larger-than-exact** ascription (`effects.bump_not_left`,
+  Boogie `bumpEff`): a loop's effect is bumped out of the left-mover region
+  (M-while's `e ⋢ L` — zero iterations perform no action, so e.g. a yield-only
+  closure `Y` must not reset the surrounding phase; keeps loops out of the
+  post-commit region, where termination would be required), and a blocking
+  `acquire`'s mover is bumped likewise (M-action's totality side condition:
+  `e ⊑ L` requires the action total). Post-commit placement of either is then
+  caught by the ordinary `eff != E` assert.
 * Error messages are attached at `Emitter.assert_`; keep them source-accurate.
 
 ### Objects and the heap (the `objects` extension)
@@ -110,9 +120,10 @@ Grammar keyword? update `lexer.KEYWORDS` + `parser`. New statement/expr? add an
 ## Examples & tests
 
 `examples/*.mml` are the paper's examples plus corner cases (write-guarded,
-nested control, non-atomic chains, atomic-calls-atomic) and rejected programs
-(`racy_bad`, `assert_fail`, `double_release`, `both_mover_loop`,
-`rely_not_transitive`, `rely_not_reflexive`). The object extension adds
+nested control, non-atomic chains, atomic-calls-atomic, `both_mover_loop` — a
+both-mover loop ascribed a right-mover effect) and rejected programs
+(`racy_bad`, `assert_fail`, `double_release`, `post_commit_loop`,
+`post_commit_acquire`, `rely_not_transitive`, `rely_not_reflexive`). The object extension adds
 `obj_counter`, `obj_counter_client` (quantified R/G), `obj_array`
 (per-element movers), `obj_oracle_safe`/`obj_oracle_unsafe` (differential
 oracle over a published object), and the rejected `obj_racy_bad`; their tests

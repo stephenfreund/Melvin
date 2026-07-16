@@ -449,8 +449,11 @@ For each program the tool discharges (as separate Boogie procedures):
 2. **Statement obligations**: every access is permitted by its mover
    specification (no data races), every reducible sequence has shape `R*[N]L*`,
    `assert`/`wrong` are safe, loop invariants hold, and — for `M-while` — each
-   iteration is a right-mover-or-less and the loop does not lie entirely in the
-   post-commit (left-mover) region (left-mover termination).
+   iteration is a right-mover-or-less and the loop's ascribed effect is never
+   below a left-mover (bumped up if needed), so a loop cannot be placed after
+   the commit point, where termination would be required.  Likewise a blocking
+   `acquire` is never ascribed an effect below a left-mover (`M-action`'s
+   totality side condition), so it cannot follow the commit point either.
 3. **Call obligations** (`M-call-*`): callee preconditions hold and callee
    postconditions/effects are composed into the caller.
 4. **Mover-spec validity** (paper's Validity, all four conditions): the declared
@@ -558,11 +561,13 @@ consistent across the threads that may touch them.
 | `nonatomic_two_yields.mml` | a non-atomic worker with three reducible sequences      |
 | `atomic_calls_atomic.mml`  | an atomic function calling other atomic functions       |
 | `assert_pass.mml`          | an assertion that holds                                  |
+| `both_mover_loop.mml`      | a both-mover loop ascribed a right-mover effect (`M-while`'s upper bound) |
 | **Rejected examples**      | *(verified to fail, with a source-mapped diagnostic)*   |
 | `racy_bad.mml`             | writing `x` without holding its lock (data race)        |
 | `assert_fail.mml`          | an assertion that need not hold                          |
 | `double_release.mml`       | releasing a lock the thread does not hold               |
-| `both_mover_loop.mml`      | a both-mover-only loop (left-mover termination)         |
+| `post_commit_loop.mml`     | a loop placed after the commit point (`e ⋢ L` in `M-while`) |
+| `post_commit_acquire.mml`  | a blocking acquire after the commit point (`M-action` totality) |
 | `rely_not_transitive.mml`  | a per-step-bounded rely (`x <= \old(x) + 1`) that is not transitively closed |
 | `rely_not_reflexive.mml`   | a strictly-increasing rely (`\old(x) < x`) that excludes the no-interference step |
 

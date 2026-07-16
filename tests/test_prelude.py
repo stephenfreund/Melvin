@@ -8,7 +8,7 @@ import tempfile
 import pytest
 
 from melvin import prelude as P
-from melvin.effects import Effect, seq, leq
+from melvin.effects import Effect, seq, leq, bump_not_left
 from melvin.boogie_backend import BoogieBackend
 
 from _util import needs_boogie
@@ -19,6 +19,7 @@ ALL = [Effect.Y, Effect.B, Effect.R, Effect.L, Effect.N, Effect.E]
 def test_prelude_contains_core_declarations():
     text = P.prelude()
     for needed in ("function {:inline} seqEff", "function {:inline} leqEff",
+                   "function {:inline} bumpEff",
                    "function {:inline} even", "type List;", "const unique Nil: List;",
                    "type Optional;", "const unique None: Optional;"):
         assert needed in text
@@ -34,7 +35,7 @@ def test_effect_codes_are_distinct_and_complete():
 
 def test_seq_and_leq_functions_are_wellformed_ite():
     # every 'if' has a matching 'then'/'else'; a crude balance check
-    for fn in (P._seq_function(), P._leq_function()):
+    for fn in (P._seq_function(), P._leq_function(), P._bump_function()):
         assert fn.count("(if ") == fn.count(" then ")
         assert fn.count(" then ") == fn.count(" else ")
 
@@ -50,6 +51,9 @@ def test_boogie_seq_leq_match_python_algebra():
             lines.append(f"  assert seqEff({ca}, {cb}) == {P.EFF_CODE[seq(a, b).name]};")
             lv = "true" if leq(a, b) else "false"
             lines.append(f"  assert leqEff({ca}, {cb}) == {lv};")
+    for a in ALL:
+        ca = P.EFF_CODE[a.name]
+        lines.append(f"  assert bumpEff({ca}) == {P.EFF_CODE[bump_not_left(a).name]};")
     lines.append("}")
     text = "\n".join(lines)
     fd, path = tempfile.mkstemp(suffix=".bpl")

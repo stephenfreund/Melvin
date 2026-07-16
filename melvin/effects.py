@@ -154,3 +154,28 @@ def star(a: Effect) -> Effect:
 def is_reducible(e: Effect) -> bool:
     """A run/statement is reducible iff its overall effect is not the error E."""
     return e is not E
+
+
+# ---------------------------------------------------------------------------
+# Minimal ascription outside the left-mover region
+#
+# The proof rules state their effect antecedents as *upper bounds* (M-action:
+# M(A,P) <= e; M-while: (M(A1,P);e1)*;M(A2,P) <= e), so a checker may ascribe
+# any larger effect.  Two side conditions push the ascription out of the
+# left-mover region {Y, B, L}:
+#   * M-while requires  not (e <= L)  -- a loop must not be placed after the
+#     commit point of its enclosing reducible sequence (zero iterations of
+#     the loop perform no action, so e.g. a yield-only closure Y must not be
+#     allowed to reset the surrounding phase);
+#   * M-action requires  e <= L  =>  A total -- a partial (blocking) action
+#     placed post-commit could block forever, so a partial action must carry
+#     an effect above the left-mover region.
+# ---------------------------------------------------------------------------
+
+
+def bump_not_left(e: Effect) -> Effect:
+    """The least e' with e <= e' and not (e' <= L): Y,B -> R; L -> N;
+    effects already outside the left-mover region are unchanged."""
+    if not leq(e, L):
+        return e
+    return R if leq(e, B) else N

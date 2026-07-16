@@ -24,7 +24,12 @@ evaluated with `this` bound to the receiver of the access.
 
 The running effect `eff` is composed with the *exact*, state-sensitive mover of
 each action (an `if/else` over the spec clauses), and `assert eff != E` after
-every action enforces reducibility (R*[N]L* separated by yields).
+every action enforces reducibility (R*[N]L* separated by yields).  The proof
+rules state their effect antecedents as upper bounds (`M(A,P) <= e`, etc.), so
+the exact minimal effect is always a valid -- and optimal -- ascription; the
+two places a *larger* effect must be ascribed are loops (M-while's ascribed
+effect may not be `<= L`) and blocking acquires (M-action's totality side
+condition), both handled by `effects.bump_not_left` / the prelude's `bumpEff`.
 """
 
 from __future__ import annotations
@@ -34,7 +39,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from . import ast_nodes as A
 from .boogie_backend import Emitter
 from .diagnostics import Span, TypeError_
-from .effects import Effect, join_all, seq, star, leq
+from .effects import Effect, bump_not_left, join_all, seq, star, leq
 from .prelude import prelude, EFF_CODE, E_CODE, R_CODE, L_CODE, Y_CODE, B_CODE, N_CODE
 from .types import TypeInfo, type_to_boogie
 
@@ -357,19 +362,30 @@ class Lowerer:
             expr = f"(if {cond} then {EFF_CODE[cl.mover.name]} else {expr})"
         return expr
 
-    def _emit_mover(self, gname: str, access: str, scope: str, span: Span, what: str) -> None:
-        """Emit the access-legality assert and compose the running effect."""
+    def _emit_mover(self, gname: str, access: str, scope: str, span: Span,
+                    what: str, partial: bool = False) -> None:
+        """Emit the access-legality assert and compose the running effect.
+
+        `partial` marks a blocking action (acquire): M-action's totality side
+        condition (e <= L implies A total) forbids ascribing it an effect in
+        the left-mover region, so its exact mover is bumped to the least
+        effect not <= L before composing (a blocking action placed after the
+        commit point could block forever)."""
         self.em.line(f"mv := {self._mover_expr(gname, access, scope)};")
         self.em.assert_(
             f"mv != {E_CODE}", span,
             f"{what} of {gname!r} is not permitted here by its mover specification "
             f"(possible data race)",
         )
+        if partial:
+            self.em.line("mv := bumpEff(mv);  // blocking action: ascribed effect not <= L")
         self.em.line("eff := seqEff(eff, mv);")
         self.em.assert_(
             f"eff != {E_CODE}", span,
             f"{what} of {gname!r} breaks reducibility here: this reducible sequence "
-            f"is not of the form R*[N]L* (insert a yield to split it)",
+            f"is not of the form R*[N]L* (insert a yield to split it)"
+            + ("; a blocking action may not follow the commit point"
+               if partial else ""),
         )
 
     # ---------------------------------------------------------- field movers
@@ -400,18 +416,23 @@ class Lowerer:
         return self._mover_ite(clauses, cur, old)
 
     def _emit_field_mover(self, cls: str, fld: str, access: str, scope: str,
-                          recv: str, span: Span, what: str) -> None:
+                          recv: str, span: Span, what: str,
+                          partial: bool = False) -> None:
         self.em.line(f"mv := {self._field_mover_expr(cls, fld, access, scope, recv)};")
         self.em.assert_(
             f"mv != {E_CODE}", span,
             f"{what} of field {fld!r} is not permitted here by its mover "
             f"specification (possible data race)",
         )
+        if partial:
+            self.em.line("mv := bumpEff(mv);  // blocking action: ascribed effect not <= L")
         self.em.line("eff := seqEff(eff, mv);")
         self.em.assert_(
             f"eff != {E_CODE}", span,
             f"{what} of field {fld!r} breaks reducibility here: this reducible "
-            f"sequence is not of the form R*[N]L* (insert a yield to split it)",
+            f"sequence is not of the form R*[N]L* (insert a yield to split it)"
+            + ("; a blocking action may not follow the commit point"
+               if partial else ""),
         )
 
     def _capture_recv(self, base: A.Expr, cls: str, scope: str, span: Span,
@@ -838,13 +859,14 @@ class Lowerer:
             self.snapshot("pre", scope, only_globals=True)
             self.em.line(f"assume pre_{fm}[{recv}] == 0;")
             self.em.line(f"v_{fm} := v_{fm}[{recv} := tid];")
-            self._emit_field_mover(cls, s.lock, "write", scope, recv, s.span, "acquire")
+            self._emit_field_mover(cls, s.lock, "write", scope, recv, s.span,
+                                   "acquire", partial=True)
             return
         self.snapshot("pre", scope, only_globals=True)
         # acquire blocks unless the lock is free (guard: \old(m) == 0)
         self.em.line(f"assume pre_{s.lock} == 0;")
         self.em.line(f"v_{s.lock} := tid;")
-        self._emit_mover(s.lock, "write", scope, s.span, "acquire")
+        self._emit_mover(s.lock, "write", scope, s.span, "acquire", partial=True)
 
     def emit_release(self, s: A.Release, ctx: "_Ctx") -> None:
         scope = ctx.scope
@@ -935,17 +957,10 @@ class Lowerer:
         cur = self.cur_map(scope)
         inv = self.tr.tr(s.invariant, cur, self.snap_map(scope, "o")) if s.invariant else "true"
         # Static (state-insensitive) effect of one iteration, used only for the
-        # termination side-condition and downstream effect (over-approximation).
+        # downstream effect (over-approximation).
         iter_static = self._loop_iter_static(s, ctx)
         a2_static = self._cond_fail_static(s.cond)
         loop_static = seq(star(iter_static), a2_static)
-        if leq(loop_static, Effect.L):
-            raise TypeError_(
-                "loop may fail to terminate after committing: its effect is "
-                f"'{loop_static.pretty}' (<= left-mover); a reducible loop must "
-                "not lie entirely in the post-commit (left-mover) region",
-                s.span,
-            )
         modified = self._loop_modified(s, ctx)
         self.em.line("// while loop (M-while); each iteration must be a right-mover-or-less")
         self.em.line("le_save := eff;")            # effect before the loop
@@ -971,8 +986,23 @@ class Lowerer:
         # loop-exit action A2, so the loop's overall effect is precise on exit.
         self.em.line(f"eff := seqEff(le_save, {EFF_CODE[star(iter_static).name]});")
         self.emit_action_fail(s.cond, ctx)         # exact failing test A2 (composes into eff)
+        if leq(loop_static, Effect.L):
+            # M-while requires the ascribed loop effect e to satisfy
+            # (M(A1,P);e1)*;M(A2,P) <= e and not (e <= L).  When the loop's
+            # static effect lies in the left-mover region, ascribe the least
+            # effect above it instead (Y,B -> R; L -> N) and compose *that*
+            # downstream.  This is sound because the rule's effect antecedent
+            # is an upper bound; the not-<=-L guard is needed because zero
+            # iterations perform no action (a yield-only closure Y must not
+            # reset the surrounding phase), and it is what keeps a loop out
+            # of the post-commit region, where termination would be required.
+            e_loop = bump_not_left(loop_static)
+            self.em.line(f"eff := seqEff(le_save, {EFF_CODE[e_loop.name]});"
+                         f"  // ascribed loop effect {e_loop.name} (M-while: e not <= L)")
         self.em.assert_(f"eff != {E_CODE}", s.span,
-                        "loop breaks reducibility in its surrounding sequence")
+                        "loop breaks reducibility in its surrounding sequence "
+                        "(a loop's effect may not be below a left-mover, so it "
+                        "cannot be placed after the commit point)")
 
     # ------------------------------------------------- conditional actions
     def emit_action_success(self, c: A.Cond, ctx: "_Ctx") -> None:
@@ -1056,8 +1086,14 @@ class Lowerer:
         if isinstance(s, A.Acquire) or isinstance(s, A.Release):
             if s.lock_expr is not None:
                 cls = self.ti.expr_class[id(s.lock_expr)]
-                return self._field_mover_static(cls, s.lock, "write")
-            return self._mover_static(s.lock, "write")
+                mv = self._field_mover_static(cls, s.lock, "write")
+            else:
+                mv = self._mover_static(s.lock, "write")
+            if isinstance(s, A.Acquire):
+                # acquire may block: its ascribed effect must not be <= L
+                # (M-action's totality side condition).
+                mv = bump_not_left(mv)
+            return mv
         if isinstance(s, A.FieldWrite):
             kind, gvar = self.ti.assign_kind[id(s)]
             cls, fld = gvar.split(".", 1)
@@ -1090,7 +1126,8 @@ class Lowerer:
             return join(t, e)
         if isinstance(s, A.While):
             it = self._loop_iter_static(s, ctx)
-            return seq(star(it), self._cond_fail_static(s.cond))
+            # the ascribed loop effect is never <= L (M-while side condition)
+            return bump_not_left(seq(star(it), self._cond_fail_static(s.cond)))
         if isinstance(s, A.Call_):
             callee = self.prog.find_func(self.ti.call_target.get(id(s), s.name))
             if callee is not None and callee.is_atomic:

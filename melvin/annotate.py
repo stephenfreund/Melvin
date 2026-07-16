@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from . import ast_nodes as A
-from .effects import Effect, join, join_all, seq, star
+from .effects import Effect, bump_not_left, join, join_all, seq, star
 from .types import TypeInfo
 from .vcgen import Lowerer, _Ctx
 
@@ -167,10 +167,13 @@ class _Annotator:
 
     def stmt_eff(self, s: A.Stmt, ctx: _Ctx) -> Effect:
         if isinstance(s, A.Acquire):
+            # acquire may block, so its ascribed effect is never <= L
+            # (M-action's totality side condition); mirror vcgen's bump.
             if s.lock_expr is not None:
                 cls = self.ti.expr_class[id(s.lock_expr)]
-                return _transition_field_mover(self.low, cls, s.lock, 0, TID)
-            return _transition_mover(self.low, s.lock, 0, TID)
+                return bump_not_left(
+                    _transition_field_mover(self.low, cls, s.lock, 0, TID))
+            return bump_not_left(_transition_mover(self.low, s.lock, 0, TID))
         if isinstance(s, A.Release):
             if s.lock_expr is not None:
                 cls = self.ti.expr_class[id(s.lock_expr)]
@@ -200,7 +203,9 @@ class _Annotator:
             it = self.cond_eff(s.cond, success=True)
             for st in s.body:
                 it = seq(it, self.stmt_eff(st, ctx))
-            return seq(star(it), self.cond_eff(s.cond, success=False))
+            # the ascribed loop effect is never <= L (M-while side condition)
+            return bump_not_left(
+                seq(star(it), self.cond_eff(s.cond, success=False)))
         return self.low._stmt_static(s, ctx)
 
     def cond_eff(self, c: A.Cond, success: bool) -> Effect:
@@ -344,6 +349,9 @@ class _Explainer(_Annotator):
             acq = isinstance(s, A.Acquire)
             what = "acquire" if acq else "release"
             note = "join of the clauses not ruled out by the transition"
+            if acq:
+                note += ("; acquire may block, so its effect is never below "
+                         "a left-mover (bumped up if needed)")
             env = self._env(s)
             if s.lock_expr is not None:
                 cname = self.ti.expr_class[id(s.lock_expr)]
@@ -424,8 +432,12 @@ class _Explainer(_Annotator):
                     "note": "touches no shared state: always a both-mover"}
         if isinstance(s, (A.If, A.While)):
             what = "if" if isinstance(s, A.If) else "while loop"
-            out = {"action": what,
-                   "note": f"combined effect of the {what}'s condition and body"}
+            note = f"combined effect of the {what}'s condition and body"
+            if isinstance(s, A.While):
+                note += ("; a loop's effect is never below a left-mover "
+                         "(bumped up if needed), so it cannot sit after "
+                         "the commit point")
+            out = {"action": what, "note": note}
             c = s.cond
             while isinstance(c, A.NotCond):
                 c = c.inner

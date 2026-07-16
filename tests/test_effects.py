@@ -5,7 +5,7 @@ import itertools
 import pytest
 
 from melvin.effects import Effect, Y, B, R, L, N, E, seq, star, join, join_all, \
-    leq, seq_all, is_reducible
+    leq, seq_all, is_reducible, bump_not_left
 
 ALL = [Y, B, R, L, N, E]
 
@@ -109,3 +109,24 @@ def test_reducibility_examples_from_paper():
 def test_is_reducible():
     for x in ALL:
         assert is_reducible(x) == (x is not E)
+
+
+def test_bump_not_left_table():
+    # Y,B -> R; L -> N; everything already outside the left-mover region fixed.
+    assert bump_not_left(Y) == R
+    assert bump_not_left(B) == R
+    assert bump_not_left(L) == N
+    assert bump_not_left(R) == R
+    assert bump_not_left(N) == N
+    assert bump_not_left(E) == E
+
+
+def test_bump_not_left_is_least_ascription():
+    # bump(e) is the least e' with e <= e' and not (e' <= L).
+    for e in ALL:
+        b = bump_not_left(e)
+        assert leq(e, b)
+        assert not leq(b, L)
+        for cand in ALL:
+            if leq(e, cand) and not leq(cand, L):
+                assert leq(b, cand)

@@ -1,0 +1,20 @@
+// A blocking acquire placed AFTER the commit point: REJECTED.  Only thread 1
+// ever touches lock m, so every write to it is a valid both-mover -- but
+// acquire may block (it waits for m == 0), and M-action's totality side
+// condition (e <= L requires the action to be total) forbids ascribing a
+// partial action an effect in the left-mover region.  The acquire is
+// therefore ascribed the least larger effect R, and composing it after the
+// non-mover commit `c = 1` is the error effect E.  (Without the totality
+// condition this program would verify, yet thread 1 can block forever
+// post-commit re-acquiring a lock it already holds.)
+var int c  non-mover;
+lock m  write both-mover if tid == 1;
+
+atomic
+requires tid == 1
+ensures  true
+block_after_commit() {
+  c = 1;        // non-mover: the commit point of this reducible sequence
+  acquire(m);   // blocks; both-mover per spec, ascribed R => N;R = E
+}
+init c == 0 && m == 0;

@@ -1,0 +1,19 @@
+// A both-mover loop placed AFTER the commit point: REJECTED.  The loop's
+// ascribed effect is never below a left-mover (M-while requires e not <= L,
+// since zero iterations perform no action and an unbounded loop must not run
+// post-commit, where termination would be required).  Here the reducible
+// sequence has already committed at release(m) (a left-mover), so composing
+// the loop's right-mover effect after it is the error effect E.
+var int x  both-mover if m == tid;
+lock m  write right-mover if \old(m) == 0 && m == tid
+        write left-mover  if \old(m) == tid && m == 0;
+
+atomic
+requires true
+ensures  true
+loop_after_commit() {
+  acquire(m);
+  release(m);
+  while (x < 10) invariant true { skip; }
+}
+init x == 0 && m == 0;
