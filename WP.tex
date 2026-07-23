@@ -1,0 +1,1075 @@
+\documentclass[11pt]{article}
+
+%============================================================
+%  Packages
+%============================================================
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{stmaryrd}
+\usepackage{enumitem}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{microtype}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+
+%============================================================
+%  Theorem environments
+%     (independent counters, matching the numbering
+%      Theorem 1..5, Lemma 1..9, Definition 1..4, Remark 1)
+%============================================================
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\theoremstyle{plain}
+\newtheorem*{namedthm}{Theorem}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+
+%============================================================
+%  Semantic macros
+%============================================================
+% Semantic domains
+\newcommand{\Tid}{\mathit{Tid}}
+\newcommand{\Store}{\mathit{Store}}
+\newcommand{\Var}{\mathit{Var}}
+\newcommand{\Value}{\mathit{Value}}
+\newcommand{\Action}{\mathit{Action}}
+\newcommand{\Effect}{\mathbb{E}}
+\newcommand{\Phase}{\mathbb{P}}
+\newcommand{\Cfg}{\mathit{Cfg}}
+\newcommand{\XPred}{\mathit{XPred}}
+
+% Effects and phases
+\newcommand{\MY}{\mathsf{Y}}
+\newcommand{\MB}{\mathsf{B}}
+\newcommand{\MR}{\mathsf{R}}
+\newcommand{\ML}{\mathsf{L}}
+\newcommand{\MN}{\mathsf{N}}
+\newcommand{\ME}{\mathsf{E}}
+\newcommand{\sq}{\sqsubseteq}
+\newcommand{\nsq}{\not\sqsubseteq}
+
+% Transformers and judgments
+\newcommand{\wpx}{\mathit{wp}}
+\newcommand{\stp}{\mathit{st}}
+\newcommand{\en}{\mathsf{en}}
+\newcommand{\one}[1]{\langle #1\rangle}
+\newcommand{\postp}{\mathit{post}}
+\newcommand{\prep}{\mathit{pre}}
+\newcommand{\upemb}[2]{\lceil #1\rceil_{#2}}     % ceil-embedding of pred at effect
+\newcommand{\vdashwp}{\vdash_{\mathit{wp}}}
+% Mover-logic judgment  R,G |- {P} s {Q} . e
+\newcommand{\mljud}[6]{#1,#2\vdash\{#3\}\,#4\,\{#5\}\cdot #6}
+\newcommand{\dcl}{\ensuremath{\downarrow}\text{-closed}}
+\newcommand{\anchorshift}{\triangleright}
+\newcommand{\MLplus}{\textsf{ML}^{+}}
+
+% Statement forms
+\newcommand{\tskip}{\mathtt{skip}}
+\newcommand{\twrong}{\mathtt{wrong}}
+\newcommand{\tyield}{\mathtt{yield}}
+\newcommand{\kif}{\mathtt{if}}
+\newcommand{\kwhile}{\mathtt{while}}
+\newcommand{\cact}[2]{#1\diamond #2}                 % conditional action
+\newcommand{\oldx}[1]{\mathtt{\backslash old}(#1)}
+
+% Misc
+\newcommand{\melvin}{\textsc{Melvin}}
+\newcommand{\code}[1]{\texttt{#1}}
+
+%============================================================
+\title{A Weakest-Precondition Calculus for Mover Logic}
+\author{Companion technical note to \emph{Mover Logic}\\[2pt]
+        \small (Flanagan \& Freund, ECOOP 2024)}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note gives a weakest-precondition (WP) presentation of \emph{mover logic}
+(Flanagan \& Freund, \emph{Mover Logic: A Concurrent Program Logic for Reduction
+and Rely-Guarantee Reasoning}, ECOOP 2024; henceforth \textbf{[ML]}): a
+compositional predicate transformer $\wpx$ such that checking a fixed set of
+entailments over $\wpx$ verifies a program, together with the metatheory relating
+the transformer to the declarative proof rules of [ML] and to the operational
+semantics. The transformer is the declarative counterpart of the
+verification-condition generation implemented in \melvin{} (\code{vcgen.py}); see
+\S\ref{sec:melvin}.
+
+The key design decision is that $\wpx$ acts on predicates over
+\emph{phase-extended configurations} $(t,\sigma_0,\sigma,p)$: thread id, store at
+the start of the current reducible sequence, current store, and a \emph{phase}
+$p\in\{\MR,\MN\}$ recording whether the current reducible sequence has committed.
+The phase plays the role of the ghost effect variable in the instrumented
+semantics of [ML,~\S A.2], and reducibility, left-mover totality, and guarantee
+obligations all become ordinary conjuncts of $\wpx$. No stability side conditions
+are needed except at $\tyield$, which is a single clause of the transformer.
+\end{abstract}
+
+%============================================================
+\section{Setting}\label{sec:setting}
+
+We work with the Mover Logic Language (MML) exactly as in [ML,~\S5--\S7]; this
+section fixes notation and records the ingredients the transformer needs. Proofs
+of facts stated here without proof are in [ML].
+
+\subsection{Syntax and operational semantics}
+
+\[
+\begin{array}{rcl}
+s &::=& \tskip \mid \twrong \mid A \mid s;s
+        \mid \kif\;(\cact{A_1}{A_2})\;s\;s
+        \mid \kwhile\;(\cact{A_1}{A_2})\;s \mid f() \mid \tyield\\
+A &\subseteq& \Tid\times\Store\times\Store
+\qquad \sigma\in\Store=\Var\to\Value
+\qquad t,u\in\Tid
+\end{array}
+\]
+
+Actions $A$ are arbitrary tid-indexed store relations (assignments, lock
+operations, \code{cas}, unstable reads, \dots). Write
+$\en(A,t,\sigma) \iff \exists\sigma'.\ (t,\sigma,\sigma')\in A$
+(\emph{$A$ is enabled}), and call $A$ \emph{total} if $\en(A,t,\sigma)$ for all
+$t,\sigma$. A conditional action $\cact{A_1}{A_2}$ must satisfy the language
+well-formedness condition that $A_1\cup A_2$ is total. A state
+$\Sigma=\langle s_1\ldots s_n,\sigma\rangle$ steps under the preemptive relation
+$\Sigma\to\Sigma'$ of [ML,~\S5]; $\Sigma$ is \emph{wrong} if some
+$s_i=E[\twrong]$, with evaluation contexts $E ::= \bullet \mid E;s$. A statement
+is \emph{yielding} if it is $E[\tyield]$ or $\tskip$. Function bodies are drawn
+from a declaration table $D$; calls execute by inlining the body (rule E-call).
+
+\subsection{Effects and phases}\label{sec:effects}
+
+\[
+m \in \Effect ::= \MY\mid\MB\mid\MR\mid\ML\mid\MN\mid\ME
+\qquad\qquad
+\MY\sq\MB\sq\MR,\ML\sq\MN\sq\ME
+\]
+
+with join $\sqcup$, sequential composition $;$ and iterative closure $^*$ from
+[ML,~\S6.1]:
+
+\[
+\begin{array}{c|cccccc}
+m_1;m_2 & \MY & \MB & \MR & \ML & \MN & \ME\\\hline
+\MY & \MY & \MY & \MY & \ML & \ML & \ME\\
+\MB & \MY & \MB & \MR & \ML & \MN & \ME\\
+\MR & \MR & \MR & \MR & \MN & \MN & \ME\\
+\ML & \MY & \ML & \ME & \ML & \ME & \ME\\
+\MN & \MR & \MN & \ME & \MN & \ME & \ME\\
+\ME & \ME & \ME & \ME & \ME & \ME & \ME
+\end{array}
+\qquad
+\begin{array}{c|c}
+m & m^{*}\\\hline
+\MY & \MY\\ \MB & \MB\\ \MR & \MR\\ \ML & \ML\\ \MN & \ME\\ \ME & \ME
+\end{array}
+\]
+
+A \textbf{phase} is $p\in\Phase=\{\MR,\MN\}$: $\MR$ means the current reducible
+sequence is in its pre-commit part (only right-movers so far since the last
+yield); $\MN$ means it has committed. The \emph{phase update} $p;m$ is composition
+restricted to $\Phase\times\Effect$; explicitly:
+
+\[
+\begin{array}{c|cccccc}
+p;m & \MY & \MB & \MR & \ML & \MN & \ME\\\hline
+\MR & \MR & \MR & \MR & \MN & \MN & \ME\\
+\MN & \MR & \MN & \ME & \MN & \ME & \ME
+\end{array}
+\]
+
+Note $p;m\in\Phase\cup\{\ME\}$, and $p;\MY=\MR$ (yield opens a new sequence).
+
+\begin{lemma}[effect algebra]\label{lem:algebra}
+By inspection of the tables:
+\begin{enumerate}[label=(\alph*),leftmargin=2.2em]
+\item $;$ is associative and monotone in both arguments;
+\item $m\sq m^{*};m$ for $m^{*}\in\{\MB,\MR\}$;
+\item if $p;m\neq\ME$ and $p'\sq p$ then $p';m\sq p;m$ and $p';m\neq\ME$;
+\item $\MN;m\neq\ME \iff m\sq\ML$ or $m = \MY$.
+\end{enumerate}
+\end{lemma}
+
+\subsection{Mover specifications}\label{sec:moverspec}
+
+A mover specification assigns each action a state- and thread-dependent effect
+\[
+M : \Action\times\Tid\times\Store \to \Effect\setminus\{\MY\}.
+\]
+$M$ is compiled from source \code{read}/\code{write} clauses exactly as in
+[ML,~\S6.2]: for a variable \code{x} with write clauses
+$\code{write}\ m_i\ \code{if}\ P_i$
+($P_i\subseteq\Tid\times\Store\times\Store$, evaluated in order),
+\[
+M(\code{x}\!=\!expr,\,t,\sigma) \;=\;
+\begin{cases}
+m_1 & \text{if } P_1(t,\sigma,\sigma[\code{x}:=\sigma(expr)])\\
+\ \vdots\\
+m_n & \text{if } P_n(t,\sigma,\sigma[\code{x}:=\sigma(expr)])\\
+\ME & \text{otherwise}
+\end{cases}
+\]
+and dually for reads with $P_i(t,\sigma,\sigma)$. Local computations have
+$M=\MB$. Because the clauses are boolean combinations of assertions over
+$(\mathit{tid},\sigma,\sigma')$, the function $\lambda\sigma.\,M(A,t,\sigma)$ is
+\emph{definable} as a nested conditional in the assertion language---the fact that
+makes the transformer below syntactically computable (\S\ref{sec:syntactic}).
+
+\begin{definition}[Validity, {[ML, Def.~1]}]\label{def:valid}
+$M$ is \emph{valid} if for all $t\neq u$, actions $A_1,A_2$, and stores:
+\begin{description}[leftmargin=3.2em,style=nextline,itemsep=2pt]
+\item[(V1)] if $M(A_1,t,\sigma)\sq\MR$, $(t,\sigma,\sigma')\in A_1$,
+  $M(A_2,u,\sigma')\sq\MN$, $(u,\sigma',\sigma'')\in A_2$, then $\exists\sigma'''$
+  with $(u,\sigma,\sigma''')\in A_2$ and $(t,\sigma''',\sigma'')\in A_1$.
+\item[(V2)] if $M(A_1,t,\sigma)\sq\MN$, $(t,\sigma,\sigma')\in A_1$,
+  $M(A_2,u,\sigma')\sq\ML$, $(u,\sigma',\sigma'')\in A_2$, then $\exists\sigma'''$
+  with $(u,\sigma,\sigma''')\in A_2$ and $(t,\sigma''',\sigma'')\in A_1$.
+\item[(V3)] if $M(A_1,t,\sigma)\sq\MN$ and $(t,\sigma,\sigma')\in A_1$ then
+  $M(A_2,u,\sigma) = M(A_2,u,\sigma')$.
+\item[(V4)] if $M(A_1,t,\sigma)\sq\MN$, $(t,\sigma,\sigma')\in A_1$,
+  $M(A_2,u,\sigma)\sq\ML$, $(u,\sigma,\sigma'')\in A_2$, then $\exists\sigma'''$
+  with $(u,\sigma',\sigma''')\in A_2$ and $(t,\sigma'',\sigma''')\in A_1$.
+\end{description}
+\end{definition}
+
+\subsection{Relies, guarantees, specifications, predicate notation}
+
+$R,G,P,Q,A \subseteq \Tid\times\Store\times\Store$ (two-store);
+$S,T\subseteq\Tid\times\Store$ (one-store). Standard operators ([ML,~\S7]):
+\[
+\begin{array}{rcl@{\qquad}rcl}
+\one{S} &=& \{(t,\sigma,\sigma)\mid (t,\sigma)\in S\} &
+I &=& \{(t,\sigma,\sigma)\}\\
+\postp(P) &=& \{(t,\sigma)\mid (t,\_,\sigma)\in P\} &
+P;A &=& \{(t,\sigma,\sigma'')\mid \exists\sigma'.\,P(t,\sigma,\sigma')\wedge A(t,\sigma',\sigma'')\}
+\end{array}
+\]
+$R^*$ is the reflexive-transitive closure of $R$ at fixed $t$. Function
+specifications:
+\[
+\begin{array}{ll}
+\textbf{atomic } e_f\ \textbf{requires } S\ \textbf{ensures } Q_f\quad f()\ \{s\}
+& (e_f\in\Effect\setminus\{\MY,\ME\},\ \text{$f$ non-recursive})\\[2pt]
+\textbf{relies } R_f\ \textbf{guarantees } G_f\ \textbf{requires } S\ \textbf{ensures } T\quad f()\ \{s\}
+& (G_f \neq \emptyset)
+\end{array}
+\]
+The mover logic judgment of [ML,~\S7] is written $\mljud{R}{G}{P}{s}{Q}{e}$.
+
+%============================================================
+\section{The WP domain}\label{sec:domain}
+
+\begin{definition}[configurations and extended predicates]\label{def:cfg}
+\[
+\Cfg \;=\; \Tid\times\Store\times\Store\times\Phase,
+\qquad
+\Phi,\Psi \in \XPred \;=\; \mathcal{P}(\Cfg).
+\]
+\end{definition}
+
+A configuration $(t,\sigma_0,\sigma,p)$ reads: thread $t$ runs in current store
+$\sigma$; the current reducible sequence started at store $\sigma_0$ (all
+$\oldx{x}$ references in assertions denote $\sigma_0(x)$); the sequence is in
+phase $p$.
+
+\medskip\noindent\textbf{Embeddings.} For a two-store $P$ and $q\in\Effect$:
+\[
+P@p = \{(t,\sigma_0,\sigma,p) \mid (t,\sigma_0,\sigma)\in P\},
+\qquad
+\upemb{P}{q} = \{(t,\sigma_0,\sigma,p') \mid (t,\sigma_0,\sigma)\in P,\ p'\in\Phase,\ p'\sq q\},
+\]
+and $\prep_p(\Phi) = \{(t,\sigma_0,\sigma)\mid(t,\sigma_0,\sigma,p)\in\Phi\}$.
+$\Phi$ is \textbf{\dcl} if $(t,\sigma_0,\sigma,\MN)\in\Phi$ implies
+$(t,\sigma_0,\sigma,\MR)\in\Phi$ (harder phases imply easier ones; note
+$\MR\sq\MN$). Every $\upemb{P}{q}$ is \dcl.
+
+%============================================================
+\section{The transformer}\label{sec:transformer}
+
+The transformer is parameterized by the declaration table $D$, the mover
+specification $M$, and the ambient rely/guarantee $R,G$; we write
+$\wpx_{R,G}(s,\Phi)$, eliding subscripts when clear.
+
+\subsection{Definition}
+
+The auxiliary \emph{guarded step} transformer, for an action $A$:
+\[
+\stp(A,\Psi) \;=\;
+\Bigl\{(t,\sigma_0,\sigma,p) \;\Bigm|\;
+\forall\sigma'.\ (t,\sigma,\sigma')\in A \Rightarrow
+p;M(A,t,\sigma)\neq\ME \;\wedge\;
+(t,\sigma_0,\sigma',\,p;M(A,t,\sigma))\in\Psi \Bigr\}
+\]
+
+\begin{definition}[wp]\label{def:wp}
+{\small
+\[
+\begin{array}{rcl}
+\wpx(\tskip,\Phi) &=& \Phi\\[3pt]
+\wpx(\twrong,\Phi) &=& \emptyset\\[3pt]
+\wpx(A,\Phi) &=&
+\{(t,\sigma_0,\sigma,p) \mid p;M(A,t,\sigma)\neq\ME\ \wedge\
+(p=\MN\Rightarrow \en(A,t,\sigma))\}\ \cap\ \stp(A,\Phi)\\[3pt]
+\wpx(s_1;s_2,\Phi) &=& \wpx(s_1,\wpx(s_2,\Phi))\\[3pt]
+\wpx(\kif\,(\cact{A_1}{A_2})\,s_1\,s_2,\Phi) &=&
+\stp(A_1,\wpx(s_1,\Phi))\ \cap\ \stp(A_2,\wpx(s_2,\Phi))\\[3pt]
+\wpx(\kwhile\,(\cact{A_1}{A_2})\,s,\Phi) &=&
+\nu W.\ \bigl[\{(t,\sigma_0,\sigma,p)\mid p=\MR\}\ \cap\
+\stp(A_1,\wpx(s,W))\ \cap\ \stp(A_2,\Phi)\bigr]\\[3pt]
+\wpx(\tyield,\Phi) &=&
+\{(t,\sigma_0,\sigma,p) \mid (t,\sigma_0,\sigma)\in G\ \wedge\
+\forall\sigma'.\ (t,\sigma,\sigma')\in R^* \Rightarrow (t,\sigma',\sigma',\MR)\in\Phi\}
+\end{array}
+\]
+For a call $f()$ where $D$ declares
+$\textbf{atomic } e_f\ \textbf{requires } S\ \textbf{ensures } Q_f$:
+\[
+\wpx(f(),\Phi) =
+\{(t,\sigma_0,\sigma,p) \mid
+p;e_f\neq\ME\ \wedge\ (t,\sigma)\in S\ \wedge\
+\forall\sigma'.\ (t,\sigma,\sigma')\in Q_f \Rightarrow (t,\sigma_0,\sigma',\,p;e_f)\in\Phi\}
+\]
+For a call $f()$ where $D$ declares
+$\textbf{relies } R_f\ \textbf{guarantees } G_f\ \textbf{requires } S\ \textbf{ensures } T$:
+\[
+\wpx(f(),\Phi) =
+\begin{cases}
+\{(t,\sigma,\sigma,\MR) \mid (t,\sigma)\in S\ \wedge\
+\forall\sigma'.\ (t,\sigma')\in T \Rightarrow (t,\sigma',\sigma',\MR)\in\Phi\}
+& \text{if } R\subseteq R_f \text{ and } G_f\subseteq G\\
+\emptyset & \text{otherwise}
+\end{cases}
+\]
+}
+\end{definition}
+
+The while-clause is a greatest fixed point in the complete lattice
+$(\XPred,\subseteq)$; the body functional is monotone (Lemma~\ref{lem:healthy}),
+so $\nu W$ exists (Knaster--Tarski). Equivalently, membership can be established by
+exhibiting any \emph{invariant} $J\subseteq\Cfg$ with
+\[
+J \subseteq \{p=\MR\}\ \cap\ \stp(A_1,\wpx(s,J))\ \cap\ \stp(A_2,\Phi),
+\]
+since every such $J$ is contained in $\nu W$. This is the form a verifier uses
+(loop invariant + inductiveness + exit checks).
+
+\subsection{Reading the clauses}
+
+\begin{itemize}[leftmargin=1.4em]
+\item \textbf{Reducibility.} Each action conjoins $p;M(A,t,\sigma)\neq\ME$: the DFA
+  $\MR^*[\MN]\ML^*$ of [ML,~\S6.1] must not die. For a \emph{bare} action statement
+  this obligation is unconditional (mirroring rule I-action of the instrumented
+  semantics, which goes wrong even if $A$ is disabled); for the arms of
+  \code{if}/\code{while} it is guarded by enabledness of that arm (mirroring
+  I-if). This asymmetry is inherited deliberately from the instrumented semantics
+  of [ML,~\S A.2].
+\item \textbf{Post-commit progress.} The conjunct $p=\MN\Rightarrow\en(A,t,\sigma)$
+  is the per-configuration form of the ``left-movers must be total'' premise of
+  M-action: once a sequence commits, it must run to its yield without blocking
+  (Lemma~\ref{lem:pct}). Conditionals need no such conjunct because $A_1\cup A_2$
+  is total, and loops none because their head is confined to phase $\MR$.
+\item \textbf{Loops.} The conjunct $p=\MR$ at the loop head (initially \emph{and}
+  at every re-test, since the recursive occurrence $W$ carries it) is the
+  transformer image of the M-while premises $M(A_1,P);e_1\sq\MR$ (an iteration
+  may not commit and keep looping) and $e\nsq\ML$ (every legal ascription is
+  $\sqsupseteq\MR$, so a loop may not follow the commit point):
+  the post-commit part of a reducible sequence may not contain loop iterations,
+  since it must terminate. A loop body may re-enter phase $\MR$ only via
+  \code{yield} ($\MN;\MY=\MR$), so non-atomic loops such as
+  \code{while (*) \{ add(); yield \}} are accepted.
+\item \textbf{Yield.} Two obligations, replacing all stabilization requirements of
+  RG logic: the pending sequence $\sigma_0\to\sigma$ must be published to the
+  guarantee $G$, and the continuation must tolerate any finite amount of
+  interference $R^*$, restarting with a fresh anchor $\sigma_0'=\sigma'$ and phase
+  $\MR$.
+\item \textbf{Atomic calls} use the callee's pre/post as a relational contract
+  composed onto the caller's pending sequence ($\sigma_0$ is \emph{not} reset---the
+  callee's behavior is absorbed into the caller's reducible sequence) and advance
+  the phase by the declared effect $e_f$.
+\item \textbf{Non-atomic calls} require an empty pending sequence ($\sigma_0=\sigma$,
+  phase $\MR$): the callee will yield internally, so the call must sit at a
+  reducible-sequence boundary; on return the anchor is reset. The side condition
+  $R\subseteq R_f,\ G_f\subseteq G$ is the contravariant rely / covariant
+  guarantee containment of M-call-non-atomic + M-conseq.
+\end{itemize}
+
+\subsection{Syntactic translation (derived forms)}\label{sec:syntactic}
+
+Fix the assertion language of first-order formulas $\varphi$ over current variables
+$\vec{x}$, anchored values $\oldx{\vec x}$ (denoting $\sigma_0$), $\mathit{tid}$,
+and a phase symbol $\pi$ ranging over $\{\MR,\MN\}$, with
+$\llbracket\varphi\rrbracket\in\XPred$. Since $M$ is clause-defined
+(\S\ref{sec:moverspec}), for each global \code{x} there are effect-valued
+\emph{terms} $\widehat{M}^{w}_{x}(e)$ and $\widehat{M}^{r}_{x}$, obtained from the
+clause list by substituting, in each $P_i$, current values for the pre-store and
+(for writes) $x\mapsto e$ for the post-store. Then $\wpx$ computes by substitution:
+
+\begin{description}[leftmargin=1.2em,itemsep=3pt]
+\item[\code{x := e} (global, total, deterministic):]\hfill\\
+  $\pi;\widehat{M}^{w}_{x}(e)\neq\ME\ \wedge\ \varphi[\pi := \pi;\widehat{M}^{w}_{x}(e)][x := e]$
+\item[\code{r := e} (local; $M=\MB$):]\hfill\\
+  $\varphi[r := e]$
+\item[\code{r := x} (read of global into local):]\hfill\\
+  $\pi;\widehat{M}^{r}_{x}\neq\ME\ \wedge\ \varphi[\pi := \pi;\widehat{M}^{r}_{x}][r := x]$
+\item[unstable read $r \Leftarrow x$:]\hfill\\
+  $\pi;\widehat{M}^{r}_{x}\neq\ME\ \wedge\ \forall v.\ \varphi[\pi := \pi;\widehat{M}^{r}_{x}][r := v]$
+\item[\code{acquire(m)} (guard $g \equiv m{=}0$):]\hfill
+  \begin{multline*}
+  \bigl(g \Rightarrow \pi;\widehat{M}^{w}_{m}(\mathit{tid})\neq\ME \wedge
+  \varphi[\pi := \pi;\widehat{M}^{w}_{m}(\mathit{tid})][m := \mathit{tid}]\bigr)\\
+  {}\wedge\ (\pi{=}\MN \Rightarrow g)
+  \end{multline*}
+\item[\code{release(m)}:]\hfill\\
+  $\pi;\widehat{M}^{w}_{m}(0)\neq\ME\ \wedge\ \varphi[\pi := \pi;\widehat{M}^{w}_{m}(0)][m := 0]$
+\item[\code{assert B} ($B$ a local-state test):]\hfill\\
+  $B\ \wedge\ \varphi$
+\item[\code{yield}:]\hfill\\
+  $G(\oldx{\vec x},\vec x)\ \wedge\ \forall \vec{x}'.\ R^*(\vec x,\vec x') \Rightarrow
+  \varphi[\oldx{\vec x},\vec x,\pi := \vec x',\vec x',\MR]$
+\end{description}
+
+A \code{cas(x,v,v')} used as a test is the conditional action
+$\cact{\langle \oldx{x}=v \wedge x=v'\rangle_x}{I}$ and is handled by the
+\code{if}/\code{while} clauses via $\stp$ on each arm. Tests that read shared
+variables carry the read effect of those variables in their $M$. Expressiveness of
+the target logic requires definability of $R^*$; in practice relies are declared
+reflexive and transitive ($R = R^*$), as \melvin{} requires, making this trivial.
+
+%============================================================
+\section{Program-level proof obligations}\label{sec:obligations}
+
+Fix a program: declarations $D$, mover specification $M$, top-level rely/guarantee
+$R,G$, and an initial state
+$\Sigma_{0} = \langle s_1\ldots s_n,\ \sigma_{\mathit{init}}\rangle$ in which every
+$s_t$ begins with \code{yield}. Let the \emph{terminal target} be
+\[
+\Phi_G \;=\; \{(t,\sigma_0,\sigma,p)\mid (t,\sigma_0,\sigma)\in G\}
+\]
+(a thread that terminates publishes its last pending sequence to $G$; $\Phi_G$ is
+\dcl). The \textbf{WP obligations} are:
+
+\begin{description}[leftmargin=3.2em,style=nextline,itemsep=3pt]
+\item[(O1)] $M$ is valid (Definition~\ref{def:valid}).
+\item[(O2)] $I \subseteq G$ (the guarantee is reflexive).
+\item[(O3)] for all $t\neq u$:
+  $(t,\sigma,\sigma')\in G \Rightarrow (u,\sigma,\sigma')\in R$ (each thread's
+  guarantee is contained in every other thread's rely; this is the substituted
+  containment $G[\mathit{tid}{:=}t]\Rightarrow R[\mathit{tid}{:=}u]$ of M-state).
+\item[(O4a)] for each atomic declaration
+  $\textbf{atomic } e_f\ \textbf{requires } S\ \textbf{ensures } Q_f\ f()\{s\}$:
+  $f$ is not (directly or indirectly) recursive, and for \textbf{each}
+  $p_0\in\{\MR,\MN\}$ with $p_0;e_f\neq\ME$:
+  \[\one{S}@p_0 \;\subseteq\; \wpx_{\emptyset,\emptyset}\bigl(s,\ \upemb{Q_f}{p_0;e_f}\bigr).\]
+  (Verifying the body at symbolic initial phase, as \melvin{}'s ghost \code{eff}
+  does, discharges both instances at once. The empty rely/guarantee make any
+  reachable \code{yield} in the body unverifiable, enforcing atomicity.)
+\item[(O4b)] for each non-atomic declaration
+  $\textbf{relies } R_f\ \textbf{guarantees } G_f\ \textbf{requires } S\ \textbf{ensures } T\ f()\{s\}$:
+  $G_f\neq\emptyset$ and
+  \[\one{S}@\MR \;\subseteq\; \wpx_{R_f,G_f}\bigl(s,\ \{(t,\sigma,\sigma,\MR)\mid (t,\sigma)\in T\}\bigr).\]
+  (The identity-shaped target forces the body to end at a reducible-sequence
+  boundary---in practice, with a final \code{yield}.)
+\item[(O5)] for each thread $t$: $s_t$ is yielding and
+  $(t,\sigma_{\mathit{init}},\sigma_{\mathit{init}},\MR) \in \wpx_{R,G}(s_t,\Phi_G)$.
+\item[(O6)] for every conditional action $\cact{A_1}{A_2}$ in the program,
+  $A_1\cup A_2$ is total (language well-formedness, as in [ML,~\S5]).
+\end{description}
+
+We say the program is \textbf{wp-verified} when O1--O6 hold. The main results:
+wp-verified programs do not go wrong (Theorem~\ref{thm:soundness}), and every
+program verifiable in mover logic is wp-verified (Theorem~\ref{thm:embed}).
+
+%============================================================
+\section{Metatheory I: structural properties}\label{sec:meta1}
+
+\begin{lemma}[healthiness]\label{lem:healthy}
+For every $s$: $\wpx_{R,G}(s,\cdot)$ is monotone and universally conjunctive, i.e.
+$\wpx(s,\bigcap_{i}\Phi_i) = \bigcap_i \wpx(s,\Phi_i)$ (for $I \ne \emptyset$).
+\end{lemma}
+\begin{proof}
+Structural induction. Every clause is built from intersections, implications with
+fixed antecedents, and universally quantified consequents in which $\Phi$ occurs
+positively and exactly once; $\stp$ is monotone and universally conjunctive in
+$\Psi$. For \code{while}: the body functional $F_\Phi(W)$ is monotone in both $W$
+and $\Phi$ (by IH), so $\nu W.F_\Phi$ is monotone in $\Phi$; conjunctivity follows
+since $\nu W.F_{\bigcap\Phi_i}(W) = \nu W.\bigcap_i F_{\Phi_i}(W)$ and greatest
+fixed points of pointwise intersections of monotone functionals with a common $W$
+coincide with the intersection of the fixed points here because $W$ occurs only
+through $\wpx(s,W)$, which is conjunctive by IH.
+\end{proof}
+
+\begin{lemma}[phase \dcl{} closure]\label{lem:down}
+If $\Phi$ is \dcl{} then so is $\wpx_{R,G}(s,\Phi)$.
+\end{lemma}
+\begin{proof}
+Structural induction; let $(t,\sigma_0,\sigma,\MN)\in\wpx(s,\Phi)$ and show
+membership at $\MR$. For actions and $\stp$: by Lemma~\ref{lem:algebra}(c),
+$\MR;m\sq\MN;m$ and $\neq\ME$ is preserved downward, and successor configurations
+move to a phase $\sq$ the original one, so IH plus \dcl{} of $\Phi$ (respectively
+of $\wpx(s_i,\Phi)$, by IH) applies. The progress conjunct is vacuous at $\MR$. For
+\code{yield}, the clause is phase-independent. For \code{while}, the clause
+contains no $\MN$-tuples, so closure is vacuous. Calls: the atomic clause is
+downward-closed by Lemma~\ref{lem:algebra}(c) and \dcl{} of $\Phi$; the non-atomic
+clause contains only $\MR$-tuples.
+\end{proof}
+
+\begin{lemma}[rely/guarantee weakening]\label{lem:weaken}
+If $R\subseteq R'$ and $G'\subseteq G$ then
+$\wpx_{R',G'}(s,\Phi) \subseteq \wpx_{R,G}(s,\Phi)$.
+\end{lemma}
+\begin{proof}
+Induction on $s$. Only \code{yield} and non-atomic calls mention $R,G$. Yield:
+$G'(t,\sigma_0,\sigma)\Rightarrow G(t,\sigma_0,\sigma)$, and quantifying over the
+smaller set $R^*\subseteq R'^*$ weakens the antecedent. Non-atomic call: the side
+condition $R\subseteq R'\subseteq R_f$, $G_f\subseteq G'\subseteq G$ persists by
+transitivity. Loops: $\nu$ of a pointwise-larger monotone functional is larger.
+\end{proof}
+
+\begin{lemma}[context decomposition]\label{lem:ctxt}
+Define $K_\bullet(\Phi)=\Phi$ and $K_{E;s}(\Phi) = K_E(\wpx(s,\Phi))$. Then for all
+$E,s,\Phi$: $\wpx(E[s],\Phi) = \wpx(s, K_E(\Phi))$, and $K_E$ is monotone and
+preserves \dcl{} closure.
+\end{lemma}
+\begin{proof}
+Induction on $E$, unfolding $\wpx(s_1;s_2,\Phi)$; the closure claims follow from
+Lemmas~\ref{lem:healthy}--\ref{lem:down}.
+\end{proof}
+
+\begin{lemma}[anchor shift / prefix]\label{lem:prefix}
+For a two-store relation $P_0$ define
+$P_0\anchorshift\Phi = \{(t,\sigma_0,\sigma',p)\mid \exists\hat\sigma.\
+(t,\sigma_0,\hat\sigma)\in P_0 \wedge (t,\hat\sigma,\sigma',p)\in\Phi\}$. Then for
+all $R,G$:
+\[
+P_0 \anchorshift \wpx_{\emptyset,\emptyset}(s,\Phi)
+\;\subseteq\;
+\wpx_{R,G}(s,\ P_0\anchorshift\Phi)
+\]
+where on the left $\Phi$ and $\wpx_{\emptyset,\emptyset}(s,\Phi)$ are read as
+predicates whose anchor is the \emph{callee-side} anchor $\hat\sigma$.
+\end{lemma}
+\begin{proof}
+Structural induction. In every clause except \code{yield} and non-atomic calls,
+the anchor component $\sigma_0$ is inert: it is copied unchanged into all
+constraints and successor configurations, so pre-composition with $P_0$ commutes
+with the clause. $\wpx_{\emptyset,\emptyset}(\tyield,\cdot)=\emptyset$ (the
+conjunct $(t,\sigma_0,\sigma)\in\emptyset$ fails), and
+$\wpx_{\emptyset,\emptyset}(f_{\mathit{non\text{-}atomic}}(),\cdot)=\emptyset$ (the
+side condition $G_f\subseteq\emptyset$ contradicts $G_f\neq\emptyset$), so those
+cases are vacuous. Loops: coinduction, taking $P_0\anchorshift(\nu W)$ as the
+candidate invariant for the shifted fixed point.
+\end{proof}
+
+Lemma~\ref{lem:prefix} is the WP form of [ML, Lemma ``Prefix'']: an atomic callee
+verified from the identity anchor $\one{S}$ may be spliced into the middle of a
+caller's reducible sequence with pending prefix $P_0$.
+
+%============================================================
+\section{Metatheory II: soundness}\label{sec:meta2}
+
+Soundness follows the architecture of [ML,~\S A]: (i) an instrumented semantics
+with phases; (ii) preservation of a wp-based state judgment under the
+\emph{non-preemptive} instrumented semantics; (iii) post-commit termination; (iv)
+the Simulation and Reduction theorems of [ML], which transfer safety from the
+non-preemptive instrumented semantics back to the standard preemptive semantics.
+Steps (ii) and (iii) are where the logic enters, and are re-proved here against
+$\wpx$; steps (i) and (iv) are unchanged from [ML].
+
+\subsection{Instrumented states and the wp state judgment}
+
+Instrumented states
+$\Pi = \langle p_1\ldots p_n\rangle\cdot\langle s_1\ldots s_n,\sigma\rangle$ and
+the relations $\Pi\to_t\Pi'$ (preemptive) and $\Pi\mapsto_t\Pi'$ (non-preemptive:
+all $u\neq t$ yielding) are exactly those of [ML,~\S A.2]: each action step
+composes $M(A,t,\sigma)$ into the phase and goes wrong on $\ME$; \code{yield}
+resets the phase to $\MR$; calls inline bodies.
+
+\begin{definition}[wp-verified instrumented states]\label{def:istate}
+$\vdashwp \Pi$ iff O1--O4, O6 hold and there exist an \emph{active thread}
+$\mathit{tid}$ and an \emph{anchor} $\sigma_0$ such that:
+\begin{enumerate}[leftmargin=2em]
+\item $(\mathit{tid},\sigma_0,\sigma,p_{\mathit{tid}}) \in \wpx_{R,G}(s_{\mathit{tid}},\Phi_G)$;
+\item for every $u\neq\mathit{tid}$: $s_u$ is yielding and
+  $(u,\sigma_0,\sigma_0,p_u) \in \wpx_{R,G}(s_u,\Phi_G)$.
+\end{enumerate}
+\end{definition}
+
+Clause 2 records that a non-active thread last observed the store $\sigma_0$ at the
+start of the active thread's current sequence, with an empty pending sequence of
+its own---the stabilized form produced by Lemma~\ref{lem:yield} below.
+
+\begin{lemma}[yield stabilization]\label{lem:yield}
+Assume O2. If $s$ is yielding, $(t,\sigma_0,\sigma,p)\in \wpx_{R,G}(s,\Phi_G)$, and
+$(t,\sigma,\sigma')\in R^*$, then $(t,\sigma',\sigma',p)\in\wpx_{R,G}(s,\Phi_G)$.
+\end{lemma}
+\begin{proof}
+If $s=\tskip$: $\wpx(s,\Phi_G)=\Phi_G$, membership gives $(t,\sigma_0,\sigma)\in G$;
+and $(t,\sigma',\sigma')\in I\subseteq G$ gives the claim. If $s=E[\tyield]$: by
+Lemma~\ref{lem:ctxt}, $\wpx(s,\Phi_G)=\wpx(\tyield,K_E(\Phi_G))$, so membership
+gives (a) $(t,\sigma_0,\sigma)\in G$ and (b)
+$\forall\sigma''.\ R^*(t,\sigma,\sigma'')\Rightarrow(t,\sigma'',\sigma'',\MR)\in K_E(\Phi_G)$.
+For the shifted configuration: $(t,\sigma',\sigma')\in I\subseteq G$ discharges
+(a), and (b) restricted to $R^*$-successors of $\sigma'$ follows from (b) at
+$\sigma$ by transitivity of $R^*$. The phase is unconstrained by the yield clause.
+\end{proof}
+
+\begin{lemma}[context switch]\label{lem:switch}
+Assume O2, O3. If $\vdashwp\Pi$ with active thread $t$ and anchor $\sigma_0$, and
+all threads of $\Pi$ are yielding, then for every thread $u$, $\vdashwp\Pi$ holds
+with active thread $u$ and anchor $\sigma$ (the current store).
+\end{lemma}
+\begin{proof}
+Thread $t$ is yielding, so as in the proof of Lemma~\ref{lem:yield} its membership
+yields $(t,\sigma_0,\sigma)\in G$; by O3, $(v,\sigma_0,\sigma)\in R \subseteq R^*$
+for every $v\neq t$. Applying Lemma~\ref{lem:yield} to each $v\neq t$ (which sits
+at $(v,\sigma_0,\sigma_0,p_v)$, with $(v,\sigma_0,\sigma)\in R^*$) moves it to
+$(v,\sigma,\sigma,p_v)\in\wpx(s_v,\Phi_G)$, and applying Lemma~\ref{lem:yield} to
+$t$ itself with the reflexive step moves it to $(t,\sigma,\sigma,p_t)$. All threads
+now sit at anchor $\sigma$ with empty pending sequences, so
+Definition~\ref{def:istate} holds for any choice of active thread.
+\end{proof}
+
+\subsection{Preservation}
+
+\begin{theorem}[Preservation]\label{thm:pres}
+If $\vdashwp\Pi$ and $\Pi\mapsto\Pi'$ then $\vdashwp\Pi'$.
+\end{theorem}
+\begin{proof}
+Let the step be by thread $w$. If $w$ is not the active thread of
+Definition~\ref{def:istate}, then all threads are yielding (definition of
+$\mapsto$) and Lemma~\ref{lem:switch} re-establishes $\vdashwp\Pi$ with active
+thread $w$; so assume $w = \mathit{tid} = 1$ w.l.o.g., with anchor $\sigma_0$,
+store $\sigma$, phase $p=p_1$, and $s_1 = E[x]$ for redex $x$. By
+Lemma~\ref{lem:ctxt}, $(1,\sigma_0,\sigma,p)\in\wpx(x,\Psi)$ where
+$\Psi = K_E(\Phi_G)$, and it suffices to re-establish clause 1 of
+Definition~\ref{def:istate} for the new configuration (clause 2 is untouched except
+in the yield case). Case analysis on $x$:
+\begin{itemize}[leftmargin=1.4em]
+\item $x=\twrong$: impossible, $\wpx(\twrong,\Psi)=\emptyset$.
+\item $x=\tskip;s'$: the step is I-seq; $\wpx(\tskip;s',\Psi)=\wpx(s',\Psi)$ and
+  nothing else changes.
+\item $x=A$: membership gives $p;M(A,1,\sigma)\neq\ME$, so the I-action error
+  transition is impossible; for the normal transition $(1,\sigma,\sigma')\in A$
+  with $p' = p;M(A,1,\sigma)$, the $\stp$ conjunct gives
+  $(1,\sigma_0,\sigma',p')\in\Psi = \wpx(E[\tskip],\Phi_G)$ modulo
+  Lemma~\ref{lem:ctxt} (note $\wpx(\tskip,\Psi)=\Psi$).
+\item $x=\kif\,(\cact{A_1}{A_2})\,s_1's_2'$: for the arm $i$ taken,
+  $(1,\sigma,\sigma')\in A_i$, so $\stp(A_i,\wpx(s_i',\Psi))$ yields both
+  $p;M(A_i,1,\sigma)\neq\ME$ (no error transition) and membership of the successor
+  in $\wpx(s_i',\Psi) = \wpx(E[s_i'],\Phi_G)$.
+\item $x=\kwhile\,(\cact{A_1}{A_2})\,s'$: the step is the unfolding I-while, so it
+  suffices that
+  \[
+  \wpx(\kwhile\ldots,\Psi) \subseteq
+  \wpx(\kif\,(\cact{A_1}{A_2})\,(s';\kwhile\ldots)\,\tskip,\Psi).
+  \]
+  Unfold $\nu W = F(\nu W)$: the right-hand side is
+  $\stp(A_1,\wpx(s',\nu W))\cap\stp(A_2,\Psi)$, which is $F(\nu W)$ minus the
+  conjunct $p=\MR$---a superset.
+\item $x=\tyield$: the step (I-yield) leaves $\sigma$ unchanged, sets $p_1'=\MR$.
+  Membership gives $(1,\sigma_0,\sigma)\in G$ and, taking the reflexive
+  interference step, $(1,\sigma,\sigma,\MR)\in K_E(\Phi_G) = \wpx(E[\tskip],\Phi_G)$.
+  Re-anchor at $\sigma_0' = \sigma$: clause 1 holds for thread 1. For each $u\neq 1$:
+  from $(1,\sigma_0,\sigma)\in G$ and O3, $(u,\sigma_0,\sigma)\in R^*$, so
+  Lemma~\ref{lem:yield} moves $u$ from anchor $\sigma_0$ to anchor $\sigma$.
+  Definition~\ref{def:istate} holds with active thread 1 and anchor $\sigma$.
+\item $x=f()$, atomic, body $s_f$: the step (I-call) replaces $f()$ by $s_f$,
+  leaving $\sigma,p$ unchanged. Membership gives $(1,\sigma)\in S$,
+  $p;e_f\neq\ME$, and
+  $\forall\sigma'.\ Q_f(1,\sigma,\sigma')\Rightarrow(1,\sigma_0,\sigma',p;e_f)\in\Psi$.
+  Instantiate O4a at $p_0 = p$:
+  $(1,\sigma,\sigma,p)\in\wpx_{\emptyset,\emptyset}(s_f,\upemb{Q_f}{p;e_f})$. Apply
+  Lemma~\ref{lem:prefix} with $P_0=\{(1,\sigma_0,\sigma)\}$:
+  $(1,\sigma_0,\sigma,p)\in\wpx_{R,G}(s_f,\ P_0\anchorshift\upemb{Q_f}{p;e_f})$.
+  Every element of $P_0\anchorshift\upemb{Q_f}{p;e_f}$ has the form
+  $(1,\sigma_0,\sigma',p')$ with $Q_f(1,\sigma,\sigma')$ and $p'\sq p;e_f$, hence
+  lies in $\Psi$ by the call conjunct and \dcl{} of $\Psi$
+  (Lemmas~\ref{lem:down},~\ref{lem:ctxt}). By monotonicity
+  (Lemma~\ref{lem:healthy}), $(1,\sigma_0,\sigma,p)\in\wpx(s_f,\Psi) = \wpx(E[s_f],\Phi_G)$.
+\item $x=f()$, non-atomic, body $s_f$: membership gives $p=\MR$, $\sigma_0=\sigma$,
+  $(1,\sigma)\in S$, the side conditions $R\subseteq R_f, G_f\subseteq G$, and
+  $\forall\sigma'.\ T(1,\sigma')\Rightarrow(1,\sigma',\sigma',\MR)\in\Psi$. By O4b,
+  $(1,\sigma,\sigma,\MR)\in\wpx_{R_f,G_f}(s_f,\Phi_{\mathit{ret}})$ with
+  $\Phi_{\mathit{ret}}=\{(1,\sigma',\sigma',\MR)\mid T(1,\sigma')\}$; by
+  Lemma~\ref{lem:weaken} the same holds for $\wpx_{R,G}$; and
+  $\Phi_{\mathit{ret}}\subseteq\Psi$ by the call conjunct, so monotonicity gives
+  $(1,\sigma,\sigma,\MR)\in\wpx(E[s_f],\Phi_G)$.\qedhere
+\end{itemize}
+\end{proof}
+
+\begin{theorem}[verified states are not wrong]\label{thm:notwrong}
+If $\vdashwp\Pi$ then $\Pi$ is not wrong.
+\end{theorem}
+\begin{proof}
+A wrong thread has $s_t = E[\twrong]$, which is not yielding, so $t$ must be the
+active thread; but then
+$(t,\sigma_0,\sigma,p)\in\wpx(\twrong,K_E(\Phi_G))=\emptyset$, a contradiction.
+\end{proof}
+
+\subsection{Post-commit termination}
+
+Recall the metric $|s|$ of [ML, Lemma ``Post-Commit Termination'']:
+$|\tskip|=|\twrong|=0$; $|A|=|\tyield|=|\kwhile\ldots|=1$; $|f()|=1$ for
+non-atomic $f$ and $|s_f|+1$ for atomic $f$ with body $s_f$;
+$|s_1;s_2|=|\kif\,C\,s_1\,s_2|=1+|s_1|+|s_2|$. It is well-defined because atomic
+functions are non-recursive (O4a).
+
+\begin{lemma}[post-commit termination]\label{lem:pct}
+Suppose $\vdashwp\Pi$, thread $t$ has $p_t=\MN$, and $s_t$ is not yielding. Then
+$s_t$ can step ($\Pi\to_t$ is enabled), no such step is an error transition, every
+step strictly decreases $|s_t|$, and the phase remains $\MN$ until $s_t$ becomes
+yielding. Consequently $\Pi\to_t^*\Pi'$ with $s'_t$ yielding, in at most $|s_t|$
+steps.
+\end{lemma}
+\begin{proof}
+Since $s_t$ is not yielding, $t$ is the active thread; let
+$(t,\sigma_0,\sigma,\MN)\in\wpx(x,\Psi)$ for the redex $x$ (Lemma~\ref{lem:ctxt}).
+Case analysis:
+\begin{itemize}[leftmargin=1.4em]
+\item $x=A$: the progress conjunct at $\MN$ gives $\en(A,t,\sigma)$; reducibility
+  gives $\MN;M(A,t,\sigma)\neq\ME$, so the step is a normal transition; by the phase
+  table the new phase is $\MN$ ($M\neq\MY$); $|\tskip|<|A|$.
+\item $x=\kif\,(\cact{A_1}{A_2})\ldots$: some arm is enabled by O6; for that arm,
+  $\stp$ gives non-error; metric decreases; phase stays $\MN$.
+\item $x=\kwhile\ldots$: impossible---the loop clause requires $p=\MR$.
+\item $x=f()$ non-atomic: impossible---the call clause requires $p=\MR$.
+\item $x=f()$ atomic: I-call inlines the body, is always enabled, keeps
+  $\sigma,p$; the preservation argument (atomic-call case of
+  Theorem~\ref{thm:pres}, using O4a at $p_0=\MN$) re-establishes membership;
+  $|s_f|<|f()|$.
+\item $x=\tskip;s'$: enabled, metric decreases.
+\item $x=\twrong$: impossible ($\wpx=\emptyset$).
+\item $x=\tyield$: excluded ($s_t$ would be yielding).
+\end{itemize}
+Each step is a $\mapsto_t$ step (all other threads yielding, by $\vdashwp\Pi$), so
+Theorem~\ref{thm:pres} maintains $\vdashwp$ along the sequence and the argument
+iterates; the metric bounds its length.
+\end{proof}
+
+\subsection{Reduction interface and the main theorem}
+
+The remaining machinery of [ML,~\S A] is independent of how states are verified:
+
+\begin{namedthm}[Simulation, {[ML, Thm 2]}]
+If $\Sigma\sim\Pi$ and $\Sigma\to\Sigma'$ then there is $\Pi'$ with $\Pi\to\Pi'$
+and either $\Sigma'\sim\Pi'$ or $\Pi'$ wrong. (Here $\sim$ pairs $\Sigma$ with any
+phase-annotated $\Pi$ carrying the same threads and store.)
+\end{namedthm}
+
+\begin{namedthm}[Reduction, {[ML, Thm 3]}]
+Suppose $\vdashwp\Pi$, all threads of $\Pi$ are yielding, and $\Pi$ goes wrong
+under $\to$. Then $\Pi$ goes wrong under $\mapsto$.
+\end{namedthm}
+
+The proof of Reduction in [ML,~\S B.1] uses only: the eight
+commuting/disjointness properties of the instrumented semantics, which depend on
+validity of $M$ (O1, via the Right- and Left-Commutativity lemmas and the Diamond
+and Iterative Diamond lemmas of [ML,~\S B.1]---these mention no proof system);
+Preservation; and Post-Commit Termination. Substituting Theorem~\ref{thm:pres} for
+[ML]'s Preservation theorem and Lemma~\ref{lem:pct} for [ML]'s Post-Commit
+Termination lemma yields the statement verbatim.
+
+\begin{theorem}[Soundness of the WP translation]\label{thm:soundness}
+If a program is wp-verified (O1--O6) then $\Sigma_0$ does not go wrong under the
+standard preemptive semantics.
+\end{theorem}
+\begin{proof}
+Let $\Pi_0$ annotate $\Sigma_0$ with all phases $\MR$. O5 gives
+Definition~\ref{def:istate} for $\Pi_0$ (any thread active, anchor
+$\sigma_{\mathit{init}}$; clause 2 holds because every $s_t$ is yielding and sits
+at the common anchor), so $\vdashwp\Pi_0$, and $\Sigma_0\sim\Pi_0$. Suppose
+$\Sigma_0\to^*\Sigma'$ wrong. By Simulation (induction along the trace),
+$\Pi_0\to^*\Pi'$ with $\Pi'$ wrong. All threads of $\Pi_0$ are yielding, so by
+Reduction $\Pi_0\mapsto^*\Pi''$ with $\Pi''$ wrong. By Theorem~\ref{thm:pres}
+(induction), $\vdashwp\Pi''$---contradicting Theorem~\ref{thm:notwrong}.
+\end{proof}
+
+%============================================================
+\section{Metatheory III: agreement with mover logic}\label{sec:meta3}
+
+\subsection{The logic embeds into wp}
+
+\begin{theorem}[soundness of mover logic relative to wp]\label{thm:embed}
+If $\mljud{R}{G}{P}{s}{Q}{e}$ is derivable ([ML,~\S7]) then for every $p\in\Phase$
+with $p;e\neq\ME$:
+\[
+P@p \;\subseteq\; \wpx_{R,G}\bigl(s,\ \upemb{Q}{p;e}\bigr).
+\]
+Moreover, derivability of $\vdash \mathit{fn}$ for every declaration implies O4,
+and $\vdash\Sigma_0$ (rule M-state) implies O1--O3, O5, O6. Hence every program
+verifiable in mover logic is wp-verified, and Theorem~\ref{thm:soundness}
+re-proves [ML, Thm 1].
+\end{theorem}
+\begin{proof}
+Induction on the derivation. Throughout, write $m_\sigma = M(A,t,\sigma)$ and
+recall $M(A,P) = \bigsqcup_{(t,\_,\sigma)\in P} M(A,t,\sigma)$, so
+$m_\sigma \sq M(A,P)$ for $(t,\_,\sigma)\in P$, and $;$ is monotone
+(Lemma~\ref{lem:algebra}a).
+\begin{itemize}[leftmargin=1.4em]
+\item \textbf{M-action} ($M(A,P)\sq e$; $e\sq\ML\Rightarrow A$ total). Fix
+  $(t,\sigma_0,\sigma)\in P$ and $p$ with $p;e\neq\ME$. Reducibility:
+  $p;m_\sigma\sq p;e\neq\ME$. Progress: if $p=\MN$ then $\MN;e\neq\ME$ forces
+  $e\sq\ML$ (Lemma~\ref{lem:algebra}d and $e \ne \MY$), so $A$ is total, hence
+  enabled. Step: any successor $(t,\sigma_0,\sigma')$ lies in $P;A = Q$ at phase
+  $p;m_\sigma\sq p;e$, i.e. in $\upemb{Q}{p;e}$.
+\item \textbf{M-seq} ($e = e_1;e_2$). $p;e_1;e_2\neq\ME$ gives $p;e_1\neq\ME$
+  ($\ME$ is absorbing). IH on $s_1$: $P@p\subseteq\wpx(s_1,\upemb{Q_1}{p;e_1})$.
+  For every phase $p'\sq p;e_1$ with a $Q_1$-tuple, $p';e_2\sq p;e\neq\ME$
+  (Lemma~\ref{lem:algebra}c), so IH on $s_2$ at $p'$ gives
+  $Q_1@p'\subseteq\wpx(s_2,\upemb{Q_2}{p';e_2}) \subseteq\wpx(s_2,\upemb{Q_2}{p;e})$;
+  hence $\upemb{Q_1}{p;e_1}\subseteq\wpx(s_2,\upemb{Q}{p;e})$ and monotonicity
+  concludes.
+\item \textbf{M-if} ($(M(A_1,P);e_1)\sqcup(M(A_2,P);e_2)\sq e$). For each arm $i$
+  and successor via $A_i$: $p;(M(A_i,P);e_i)\sq p;e\neq\ME$, so
+  $p;M(A_i,P)\neq\ME$, giving the $\stp$ reducibility conjunct; with
+  $p''=p;m_\sigma\sq p;M(A_i,P)$ and $p'';e_i \neq \ME$, IH on $s_i$ from $P;A_i$
+  places the successor in $\wpx(s_i,\upemb{Q}{p'';e_i})\subseteq\wpx(s_i,\upemb{Q}{p;e})$.
+\item \textbf{M-while} ($e_{\mathit{it}} := M(A_1,P);e_1\sq\MR$,
+  $e_{\mathit{it}}^*;M(A_2,P)\sq e$, $e\nsq\ML$, $Q = P;A_2$).
+  From $e\nsq\ML$ and $e\neq\ME$ (else $p;e=\ME$): $e\in\{\MR,\MN\}$. Thus
+  $p;e\neq\ME$ forces $p=\MR$. From the iteration premise,
+  $e_{\mathit{it}}^*\in\{\MY,\MB,\MR\}$, so $\MR;e_{\mathit{it}}^*=\MR$.
+  Take the invariant $W = P@\MR$ and show $W\subseteq F(W)$: the
+  head conjunct $p=\MR$ holds by construction. For $\stp(A_1,\wpx(s,W))$: a
+  successor of $(t,\sigma_0,\sigma,\MR)$ via $A_1$ sits in $P;A_1$ at
+  $p''=\MR;m_\sigma \sq \MR;M(A_1,P)$ with
+  $p'';e_1\sq\MR;e_{\mathit{it}}\sq\MR$, so IH on the body judgment
+  $\mljud{R}{G}{P;A_1}{s}{P}{e_1}$ gives membership in
+  $\wpx(s,\upemb{P}{\MR}) = \wpx(s,W)$ (phases $\sq\MR$ are exactly $\{\MR\}$). For
+  $\stp(A_2,\upemb{Q}{p;e})$: a successor via $A_2$ sits in $P;A_2=Q$ at
+  $\MR;m_\sigma\sq\MR;M(A_2,P) = \MR;e_{\mathit{it}}^*;M(A_2,P)\sq\MR;e$.
+  Hence $W\subseteq\nu W'.\,F(W')$, i.e.
+  $P@\MR\subseteq\wpx(\kwhile\ldots,\upemb{Q}{\MR;e})$.
+\item \textbf{M-skip, M-wrong}: immediate ($Q=P$, $e=\MB$, $p;\MB=p$; respectively
+  $P=\emptyset$).
+\item \textbf{M-yield} ($P\Rightarrow G$,
+  $Q = \{(t,\sigma',\sigma')\mid(t,\_,\sigma)\in P, (t,\sigma,\sigma')\in R^*\}$,
+  $e=\MY$; $p;\MY=\MR$). The guarantee conjunct is the premise; each
+  $R^*$-successor $(t,\sigma',\sigma',\MR)$ lies in $Q@\MR\subseteq\upemb{Q}{\MR}$.
+\item \textbf{M-conseq} ($P\Rightarrow P_1$, $Q_1\Rightarrow Q$, $R\Rightarrow R_1$,
+  $G_1\Rightarrow G$, $e_1\sq e$). $p;e_1\sq p;e\neq\ME$; IH, then
+  Lemma~\ref{lem:weaken} (weakening from $R_1,G_1$ to $R,G$), then monotonicity
+  with $\upemb{Q_1}{p;e_1}\subseteq\upemb{Q}{p;e}$.
+\item \textbf{M-call-atomic} ($\postp(P)\Rightarrow S$, $Q = P;Q_f$, $e = e_f$):
+  the three conjuncts of the atomic-call clause are exactly the premises plus
+  $p;e_f\neq\ME$ (assumed) and the definition of $P;Q_f$.
+\item \textbf{M-call-non-atomic} ($P=\one{S}$, $Q=\one{T}$, $e=\MR$):
+  $p;\MR\neq\ME$ forces $p=\MR$; tuples of $\one{S}@\MR$ have $\sigma_0=\sigma$;
+  the rule instantiates the judgment at the callee's own $R_f,G_f$ (subsumption to
+  the caller's context goes through M-conseq, handled above), so the side
+  condition holds with $R = R_f$, $G = G_f$.
+\item \textbf{M-def-atomic}: the premise
+  $\emptyset,\emptyset\vdash\{\one{S}\}\,s\,\{Q_f\}\cdot e_f$ under the main claim
+  (at each $p_0$ with $p_0;e_f\neq\ME$) is literally O4a.
+  \textbf{M-def-non-atomic}: the premise
+  $R_f,G_f\vdash\{\one{S}\}\,s\,\{\one{T}\}\cdot\MR$ at $p_0=\MR$ gives
+  $\one{S}@\MR\subseteq\wpx_{R_f,G_f}(s,\upemb{\one{T}}{\MR})$, and
+  $\upemb{\one{T}}{\MR}$ is exactly the target of O4b. \textbf{M-state}: its
+  premises are O1--O3, O5, O6 (with $Q_t\Rightarrow G$ becoming the choice of
+  terminal target $\Phi_G$, justified by $\upemb{Q_t}{}\subseteq\Phi_G$ and
+  monotonicity).\qedhere
+\end{itemize}
+\end{proof}
+
+\begin{remark}[the embedding is strict]\label{rem:strict}
+$\wpx$ verifies programs mover logic rejects, in two ways.
+\emph{(i) Per-state effects}: $\wpx$ composes $M(A,t,\sigma)$ pointwise, while
+M-action joins over the whole precondition. Example: with
+\code{x write non-mover if flag / both-mover if !flag} and
+\code{y write both-mover if flag / non-mover if !flag}, the sequence
+\code{x := 1; y := 2} from a precondition allowing both values of \code{flag} gets
+$M(\cdot,P)=\MN$ for both writes in the logic ($\MN;\MN=\ME$, rejected), yet every
+single store is fine ($\MN;\MB$ or $\MB;\MN$), and $\wpx$ accepts. \melvin{}'s VC
+generator implements the per-state ($\wpx$) semantics---``the exact,
+state-sensitive mover''. \emph{(ii) Partial left-movers post-commit}: when the
+ascribed effect of an action is $\sq\ML$, M-action demands
+\emph{totality}---enabledness at every store---while $\wpx$ demands enabledness
+only at the reachable phase-$\MN$ configurations, where it is semantically
+required. (The upper-bound form of M-action lets a \emph{pre-commit} partial
+action escape the totality premise by ascribing the least effect $\nsq\ML$, so
+the gap concerns only genuinely post-commit placements.)
+
+The upper-bound premises of M-while also closed a former third gap: a yielding
+loop such as \code{while (*) \{ yield \}} has least effect $\MY\sq\ML$, which
+the earlier equality-form rule could not ascribe ($e\nsq\ML$ fails), but the
+upper-bound rule accepts with $e=\MR$.
+\end{remark}
+
+\subsection{Relative completeness}
+
+For the converse we must bridge the gaps of Remark~\ref{rem:strict}. Let
+$\MLplus$ be mover logic extended with the (sound) indexed disjunction rule
+\[
+\textsf{M-disj}\quad
+\frac{\forall i\in\mathcal{I}.\ \ \mljud{R}{G}{P_i}{s}{Q}{e_i}}
+     {\mljud{R}{G}{\bigcup_i P_i}{s}{Q}{\bigsqcup_i e_i}}
+\]
+whose soundness is immediate from Theorem~\ref{thm:embed} (each
+$P_i@p\subseteq \wpx(s,\upemb{Q}{p;e_i})\subseteq\wpx(s,\upemb{Q}{p;\sqcup e_i})$).
+Assume:
+\begin{description}[leftmargin=3.2em,style=nextline,itemsep=2pt]
+\item[(E)] \emph{Expressiveness}: all $\wpx$-sets and $R^*$ are definable in the
+  assertion language (Cook-style; guaranteed, e.g., when relies are
+  reflexive-transitive and the language contains arithmetic).
+\item[(T)] \emph{Totality discipline}: every action $A$ occurring in the program
+  with $M(A,t,\sigma)\sq\ML$ for some $t,\sigma$ is total. (All standard primitives
+  satisfy this: assignments, reads, unstable reads, \code{release} are total;
+  \code{acquire} is partial but is a right-mover; partial \code{cas} arms occur
+  inside conditional actions, to which M-action's totality premise does not apply.)
+\end{description}
+
+\begin{theorem}[relative completeness]\label{thm:complete}
+Assume (E) and (T). For every statement $s$, \dcl{} definable $\Phi$, and
+$p\in\Phase$ with $W_p := \prep_p(\wpx_{R,G}(s,\Phi)) \neq \emptyset$, there exist
+$Q$ and $e$ with $p;e\neq\ME$ such that
+\[
+\mljud{R}{G}{W_p}{s}{Q}{e}\ \text{(in $\MLplus$)}
+\qquad\text{and}\qquad
+\upemb{Q}{p;e}\subseteq\Phi .
+\]
+Consequently, a wp-verified program is verifiable in $\MLplus$: instantiating the
+claim at the O4/O5 targets yields the premises of M-def-atomic,
+M-def-non-atomic, and M-state (using M-conseq to fix the advertised
+specifications).
+\end{theorem}
+\begin{proof}
+By M-disj over singletons it suffices to prove the claim for
+$P = \{(t,\sigma_0,\sigma)\}$, a single configuration in $W_p$; the general $W_p$
+is the union of its singletons, $Q$ the union of the constructed posts (contained
+in $\prep(\Phi)$-projections, so the final $\upemb{\cdot}{}$ containment persists),
+and $e$ the join of the constructed effects, which satisfies $p;e\neq\ME$ because
+each disjunct does and $p;\cdot$ preserves joins on this finite lattice. Structural
+induction on $s$ (for \code{while}, on the fixed point):
+\begin{itemize}[leftmargin=1.4em]
+\item $s=A$: membership in $\wpx(A,\Phi)$ gives $p;m_\sigma\neq\ME$. For the
+  singleton, $M(A,P) = m_\sigma$ exactly. If $m_\sigma\sq\ML$, (T) gives totality,
+  discharging the M-action premise. Take $Q = P;A$, $e = m_\sigma$; the $\stp$
+  conjunct places $Q@(p;m_\sigma)\subseteq\Phi$, and \dcl{} lifts this to
+  $\upemb{Q}{p;e}\subseteq\Phi$. Apply M-action.
+\item $s=s_1;s_2$: by IH on $s_1$ with target $\wpx(s_2,\Phi)$ (\dcl{} and definable
+  by Lemma~\ref{lem:down} and (E)), obtain $\{P\}s_1\{Q_1\}\cdot e_1$ with
+  $\upemb{Q_1}{p;e_1}\subseteq\wpx(s_2,\Phi)$. For each $p'\sq p;e_1$, IH on $s_2$
+  from $\prep_{p'}(\wpx(s_2,\Phi))\supseteq Q_1$ yields $\{Q_1\}s_2\{Q^{p'}_2\}\cdot e^{p'}_2$;
+  combine the (at most two) instances with M-disj-style bookkeeping---formally,
+  apply the singleton decomposition to $Q_1$ so that each disjunct carries the
+  phase $p'$ it actually reaches---and M-seq, taking $e = e_1;\bigsqcup e^{p'}_2$;
+  associativity and Lemma~\ref{lem:algebra}c give $p;e\neq\ME$ and the target
+  containment.
+\item $s=\kif\,(\cact{A_1}{A_2})\,s_1\,s_2$: from $\stp(A_i,\wpx(s_i,\Phi))$, IH on
+  each arm from the (singleton-decomposed) $P;A_i$, then M-if with M-conseq to
+  equalize the two posts to their union.
+\item $s=\kwhile\,(\cact{A_1}{A_2})\,s'$: membership forces $p=\MR$. Take the loop
+  invariant $J = \prep_{\MR}(\nu W)$ (definable by (E)). The fixed-point equation
+  gives, for each singleton of $J$: $\stp(A_1,\wpx(s',\nu W))$, so IH on $s'$
+  yields $\{J;A_1\}\,s'\,\{J\}\cdot e_1$ with $\MR;M(A_1,J);e_1\sq\MR$, i.e.
+  $e_{\mathit{it}} := M(A_1,J);e_1\sq\MR$---the iteration premise of M-while.
+  Take $e$ to be the least effect with $e_{\mathit{it}}^*;M(A_2,J)\sq e$ and
+  $e\nsq\ML$ (bumping $\MY,\MB\mapsto\MR$ and $\ML\mapsto\MN$ if needed); then
+  $e\in\{\MR,\MN\}$, so $p;e\neq\ME$, and M-while applies with $Q = J;A_2$,
+  whose $\upemb{\cdot}{\MR;e}$-embedding lies in $\Phi$ by $\stp(A_2,\Phi)$.
+\item $s=\tyield$: take $Q = \{(t,\sigma',\sigma')\mid R^*(t,\sigma,\sigma')\}$
+  (definable by (E)), $e=\MY$; the $\wpx$ conjuncts are the M-yield premises, and
+  $Q@\MR\subseteq\Phi$ is the interference conjunct.
+\item $s=f()$: read the corresponding call clause of Definition~\ref{def:wp} as the
+  premises of M-call-atomic (with $Q=P;Q_f$, $e=e_f$) or M-call-non-atomic (with
+  M-conseq for the rely/guarantee side conditions), exactly inverting the M-call
+  cases of Theorem~\ref{thm:embed}.
+\item $s=\tskip,\twrong$: M-skip; for \code{wrong}, $W_p=\emptyset$ and there is
+  nothing to prove (or apply M-wrong).\qedhere
+\end{itemize}
+\end{proof}
+
+The proof isolates precisely where completeness genuinely needs more than [ML]'s
+rules: arbitrary disjunction (gap (i)) and the totality discipline (gap (ii)).
+Under (T), plain mover logic suffices.
+
+%============================================================
+\section{Correspondence with the \melvin{} encoding}\label{sec:melvin}
+
+\melvin{}'s \code{vcgen.py} is a forward (strongest-postcondition-style) Boogie
+encoding of the same obligations; the dictionary between the two presentations:
+
+\begin{center}
+\renewcommand{\arraystretch}{1.25}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{WP calculus} & \textbf{\melvin{} / Boogie}\\
+\midrule
+phase $\pi$, update $p;M(A,t,\sigma)$
+  & ghost \code{eff} variable, composed via the prelude's effect-algebra functions\\
+reducibility conjunct $p;M\neq\ME$
+  & \code{assert eff != E} after each action\\
+per-state $M(A,t,\sigma)$ (Remark~\ref{rem:strict}(i))
+  & the exact, state-sensitive mover: an \code{if/else} over spec clauses\\
+anchor $\sigma_0$ / $\oldx{}$
+  & \code{o\_} snapshots (reducible-sequence start)\\
+yield clause: publish $G$, havoc under $R^*$, reset anchor and phase
+  & guarantee assert, store havoc + \code{assume R}, \code{py\_} snapshots,
+    \code{eff := Y}-reset\\
+loop clause $\nu W$ with $p=\MR$ at head
+  & unconditional \code{assert leqEff(eff, R)} at the loop head; havoc-cut loop
+    with exact per-iteration \code{eff} $\sq$ \code{R} check\\
+O4a at symbolic $p_0$
+  & per-function Boogie procedure with symbolic initial \code{eff}\\
+atomic-call clause; Lemma~\ref{lem:prefix}
+  & call-entry temps (\code{cs<k>\_\dots}) substituted into callee spec;
+    caller-side effect composition with $e_f$\\
+O1 (V1--V4)
+  & \code{gen\_validity} (\code{\_validity3}, \code{\_validity\_commute})\\
+O3 + rely closure for (E)
+  & \code{gen\_rely\_checks} ($R = R^*$ for non-atomic relies)\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Two caveats when reading \melvin{} against this document: \melvin{}'s surface
+language adds features (objects, arrays, parameters) formalized here only through
+the action abstraction; and \melvin{} summarizes a loop's \emph{downstream}
+effect with a static approximation bumped out of the $\sq\ML$ region, which is
+sound by M-conseq/Theorem~\ref{thm:embed} because it only ever enlarges the
+composed effect---the placement check itself is the unconditional head assert,
+which must not be weakened to an exit-path or static check (a loop whose exit is
+infeasible spins forever and must still be rejected at a post-commit head).
+
+%============================================================
+\section{Summary}\label{sec:summary}
+
+The calculus consists of one domain decision---predicates over
+$(t,\sigma_0,\sigma,p)$---and Definition~\ref{def:wp}. All of mover logic's
+distinctive machinery lands in three places: reducibility is a conjunct per action
+($p;M\neq\ME$), reduction's termination requirement is a conjunct per action and
+per loop head ($p=\MN\Rightarrow$ enabled; $p=\MR$ at tests), and interference is a
+single clause at \code{yield} (publish $G$; havoc under $R^*$; reset the anchor).
+Soundness (Theorem~\ref{thm:soundness}) reuses [ML]'s reduction argument unchanged,
+replacing its preservation and post-commit-termination lemmas with sharper wp
+counterparts whose proofs need no evaluation-context or consequence lemmas. The
+transformer is complete for the logic (Theorem~\ref{thm:embed}) and strictly more
+precise than it (Remark~\ref{rem:strict}), coinciding with the logic exactly up to
+arbitrary disjunction and the left-mover totality discipline
+(Theorem~\ref{thm:complete}).
+
+%============================================================
+\section*{References}
+\begin{enumerate}[leftmargin=1.6em,label={[\arabic*]}]
+\item C. Flanagan and S. N. Freund. \emph{Mover Logic: A Concurrent Program Logic
+  for Reduction and Rely-Guarantee Reasoning.} ECOOP 2024. (Cited as [ML].)
+\item R. J. Lipton. \emph{Reduction: A method of proving properties of parallel
+  programs.} CACM 18(12), 1975.
+\item C. B. Jones. \emph{Tentative steps toward a development method for
+  interfering programs.} TOPLAS 5(4), 1983.
+\item E. W. Dijkstra. \emph{Guarded commands, nondeterminacy and formal derivation
+  of programs.} CACM 18(8), 1975.
+\item S. A. Cook. \emph{Soundness and completeness of an axiom system for program
+  verification.} SIAM J. Comput. 7(1), 1978.
+\item C. Flanagan and S. N. Freund. \emph{The Anchor verifier for blocking and
+  non-blocking concurrent software.} OOPSLA 2020.
+\item J. Yi and C. Flanagan. \emph{Effects for cooperable and serializable
+  threads.} TLDI 2010. (Source of the effect DFA and composition tables.)
+\end{enumerate}
+
+\end{document}

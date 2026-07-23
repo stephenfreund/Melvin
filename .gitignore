@@ -9,3 +9,7 @@ dist/
 .coverage.*
 htmlcov/
 .DS_Store
+*.aux
+*.log
+*.out
+.claude/
