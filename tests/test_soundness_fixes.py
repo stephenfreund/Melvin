@@ -109,3 +109,71 @@ def test_init_predicate_is_type_checked():
     with pytest.raises(MelvinError, match="type mismatch"):
         check_types(parse(
             "var int x non-mover;\ninit x == true;\n", "i.mml"))
+
+
+# 5. M-while's `e not <= L` premise is enforced at the loop HEAD (WP's
+#    `p = R` head conjunct), unconditionally.  Previously it was enforced
+#    only via a static bump plus an exit-path assert that sat after the
+#    exit-action `assume`, so a post-commit loop whose static effect is not
+#    <= L (a CAS exit joins R |_| L = N) and whose exit is infeasible was
+#    accepted -- even though it spins forever after the commit point.
+
+_CAS_LOOP = """
+var int y  non-mover;
+var int l  write right-mover if \\old(l) == 0 && l == tid
+           write left-mover  if \\old(l) == tid && l == 0;
+atomic requires l == tid ensures true
+f() {{
+  {body}
+}}
+"""
+
+
+@needs_boogie
+def test_post_commit_cas_loop_rejected():
+    # commit first, then spin: the head-phase check must fire even though the
+    # exit path is infeasible (cas(l,0,tid) can never succeed while l == tid).
+    src = _CAS_LOOP.format(
+        body="y = 1;\n  while (!cas(l, 0, tid)) invariant l == tid { skip; }")
+    res = check_source(src, "pc_cas.mml")
+    assert not res.ok
+    assert any("after the commit point" in d.message for d in res.diagnostics), \
+        res.render()
+
+
+@needs_boogie
+def test_pre_commit_cas_loop_still_verifies():
+    # the same spin loop BEFORE the commit point is fine (head phase <= R);
+    # from l == 0 the cas succeeds and the loop exits as a right-mover.
+    src = """
+var int y  non-mover;
+var int l  write right-mover if \\old(l) == 0 && l == tid
+           write left-mover  if \\old(l) == tid && l == 0;
+atomic requires l == 0 ensures true
+f() {
+  while (!cas(l, 0, tid)) invariant true { skip; }
+  y = 1;
+}
+"""
+    res = check_source(src, "pre_cas.mml")
+    assert res.ok, res.render()
+
+
+@needs_boogie
+def test_loop_after_yield_still_verifies():
+    # a yield resets the phase (N;Y = R), so a loop after commit-then-yield
+    # starts a fresh reducible sequence and passes the head check.
+    src = """
+var int y  non-mover;
+relies true guarantees true requires true ensures true
+f() {
+  yield;
+  y = 1;
+  yield;
+  i = 0;
+  while (i < 3) invariant true { i = i + 1; }
+}
+thread { f(); }
+"""
+    res = check_source(src, "yield_loop.mml")
+    assert res.ok, res.render()

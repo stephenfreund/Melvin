@@ -1,0 +1,26 @@
+// A CAS spin loop placed AFTER the commit point, whose exit can never
+// succeed: the thread already holds l (requires l == tid), so cas(l, 0, tid)
+// always fails and the loop spins forever after committing the non-mover
+// write y = 1.  REJECTED.
+//
+// M-while requires the ascribed loop effect e to satisfy e not <= L, so any
+// legal ascription is >= R and the loop may never follow the commit point
+// (N;e = E).  This must be enforced at the loop HEAD, not on the exit path:
+// here the exit test is infeasible (its dynamic mover never composes), and
+// the loop's static effect is not <= L either (the static write-mover join
+// of l is R |_| L = N), so neither the exit-path reducibility assert nor the
+// static bump can catch it.  Regression test for the head-phase check.
+var int y  non-mover;
+var int l  write right-mover if \old(l) == 0 && l == tid
+           write left-mover  if \old(l) == tid && l == 0
+           read  both-mover  if l == tid;
+
+atomic
+requires l == tid
+ensures  true
+stuck() {
+  y = 1;
+  while (!cas(l, 0, tid)) invariant l == tid { skip; }
+}
+
+init y == 0 && l == 0;

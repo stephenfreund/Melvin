@@ -57,16 +57,22 @@ shells out to the executable.
   clauses) into `eff`. The paper's rules state their effect antecedents as
   *upper bounds* (`M(A,P) ⊑ e`), so the exact minimal effect is a valid — and
   optimal — ascription. Loops use a havoc-cut with an exact per-iteration
-  `eff ⊑ R` check (M-while's `M(A₁,P);e₁ ⊑ R` antecedent) plus a static
-  approximation for the surrounding effect (`_loop_iter_static`).
+  `eff ⊑ R` check (M-while's `M(A₁,P);e₁ ⊑ R` antecedent), an unconditional
+  `assert eff ⊑ R` at the loop head (M-while's `e ⋢ L` premise applied at the
+  placement: any legal ascription is `⊒ R`, so a loop may never follow the
+  commit point — checked before any exit-path assumes, so it also rejects
+  loops whose exit can never succeed), plus a static approximation for the
+  surrounding effect (`_loop_iter_static`).
 * Two places compose a **larger-than-exact** ascription (`effects.bump_not_left`,
   Boogie `bumpEff`): a loop's effect is bumped out of the left-mover region
   (M-while's `e ⋢ L` — zero iterations perform no action, so e.g. a yield-only
   closure `Y` must not reset the surrounding phase; keeps loops out of the
   post-commit region, where termination would be required), and a blocking
   `acquire`'s mover is bumped likewise (M-action's totality side condition:
-  `e ⊑ L` requires the action total). Post-commit placement of either is then
-  caught by the ordinary `eff != E` assert.
+  `e ⊑ L` requires the action total). Post-commit placement of an acquire is
+  then caught by the ordinary `eff != E` assert; for loops the head assert is
+  the authoritative placement check (the bump only keeps the downstream effect
+  faithful to the least legal ascription).
 * Error messages are attached at `Emitter.assert_`; keep them source-accurate.
 
 ### Objects and the heap (the `objects` extension)

@@ -450,8 +450,11 @@ For each program the tool discharges (as separate Boogie procedures):
    specification (no data races), every reducible sequence has shape `R*[N]L*`,
    `assert`/`wrong` are safe, loop invariants hold, and — for `M-while` — each
    iteration is a right-mover-or-less and the loop's ascribed effect is never
-   below a left-mover (bumped up if needed), so a loop cannot be placed after
-   the commit point, where termination would be required.  Likewise a blocking
+   below a left-mover (bumped up if needed).  Since any legal loop ascription is
+   therefore `⊒ R`, a loop may never be placed after the commit point, where
+   termination would be required; this is checked by an unconditional
+   `assert eff ⊑ R` at every loop head (so it fires even when the loop's exit
+   can never succeed and the loop would spin forever).  Likewise a blocking
    `acquire` is never ascribed an effect below a left-mover (`M-action`'s
    totality side condition), so it cannot follow the commit point either.
 3. **Call obligations** (`M-call-*`): callee preconditions hold and callee
@@ -567,6 +570,7 @@ consistent across the threads that may touch them.
 | `assert_fail.mml`          | an assertion that need not hold                          |
 | `double_release.mml`       | releasing a lock the thread does not hold               |
 | `post_commit_loop.mml`     | a loop placed after the commit point (`e ⋢ L` in `M-while`) |
+| `post_commit_cas_loop.mml` | a post-commit CAS spin loop whose exit can never succeed (head-phase check) |
 | `post_commit_acquire.mml`  | a blocking acquire after the commit point (`M-action` totality) |
 | `rely_not_transitive.mml`  | a per-step-bounded rely (`x <= \old(x) + 1`) that is not transitively closed |
 | `rely_not_reflexive.mml`   | a strictly-increasing rely (`\old(x) < x`) that excludes the no-interference step |
@@ -603,8 +607,11 @@ consistent across the threads that may touch them.
 * The paper's calculus omits **frame conditions**; consequently a callee's
   `ensures` must state what it leaves unchanged (e.g. `m == \old(m)`).
 * The `M-while` **left-mover-termination** side condition is enforced with a
-  sound reducibility check per iteration plus a static (state-insensitive)
-  approximation for the "not entirely left-moving" requirement.
+  sound reducibility check per iteration plus an unconditional head-phase check
+  (`assert eff ⊑ R` at every loop head: any legal loop ascription is `⊒ R`, so
+  a loop may never follow the commit point); a static (state-insensitive)
+  approximation is used only to summarize the loop's downstream effect, which
+  is sound because it only ever enlarges the composed effect.
 * The yield rule assumes the rely **once** to model `R*` (any finite number of
   interference steps), so each rely must be reflexive and transitive.  Melvin
   discharges both properties as Boogie obligations (`RelyRefl_*`,

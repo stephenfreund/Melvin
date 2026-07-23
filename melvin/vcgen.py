@@ -30,6 +30,11 @@ the exact minimal effect is always a valid -- and optimal -- ascription; the
 two places a *larger* effect must be ascribed are loops (M-while's ascribed
 effect may not be `<= L`) and blocking acquires (M-action's totality side
 condition), both handled by `effects.bump_not_left` / the prelude's `bumpEff`.
+M-while's `e not <= L` premise is additionally enforced at the loop's
+*placement* by an unconditional `assert eff <= R` at the loop head (WP's
+`p = R` head conjunct): any legal loop ascription is `>= R`, so a loop may
+never follow the commit point -- checked before any exit-path assumes, so it
+also rejects loops whose exit can never succeed.
 """
 
 from __future__ import annotations
@@ -964,6 +969,19 @@ class Lowerer:
         modified = self._loop_modified(s, ctx)
         self.em.line("// while loop (M-while); each iteration must be a right-mover-or-less")
         self.em.line("le_save := eff;")            # effect before the loop
+        # Head phase: the loop must start in the right-mover phase (WP's
+        # `p = R` at the loop head).  This is M-while's `e not <= L` premise
+        # applied at the placement: any legal ascription satisfies e >= R, so
+        # a loop may never follow the commit point of its reducible sequence
+        # (the post-commit part must terminate, and iterations may diverge).
+        # Checked unconditionally, before any exit-path assumes: a loop whose
+        # exit can never succeed spins forever and must still be rejected.
+        # Entry `eff <= R` plus the per-iteration `eff <= R` assert keeps
+        # every re-test in phase R, so checking once at entry suffices.
+        self.em.assert_(f"leqEff(eff, {R_CODE})", s.span,
+                        "loop appears after the commit point of its reducible "
+                        "sequence (M-while requires the loop's effect not <= "
+                        "left-mover; insert a yield before the loop)")
         self.em.assert_(inv, s.span, "loop invariant may not hold on entry")
         for g in modified:
             self.em.line(f"havoc v_{g};")
