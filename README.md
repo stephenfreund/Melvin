@@ -15,17 +15,7 @@ postconditions that plain RG logic forces on shared-memory code.  This
 "disentangles" a library's specification from any particular client's data
 invariant and synchronization discipline.
 
-Melvin parses a small concurrent language, builds an AST, type-checks it, lowers
-the Mover Logic proof obligations to Boogie verification conditions, runs
-Boogie, and maps prover failures back to the original source location.
-
-```
-  .mll source ──▶ lexer ──▶ parser ──▶ AST ──▶ type checker ──▶ VC generator
-                                                                     │
-                                                              Boogie (.bpl)
-                                                                     │
-                          diagnostics  ◀── map errors back ──── prover result
-```
+Try our Melvin system on the [web](https://melvin-demo.gss8b1ryfh8jc.us-east-1.cs.amazonlightsail.com/)!
 
 ---
 
