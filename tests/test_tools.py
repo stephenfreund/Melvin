@@ -182,3 +182,15 @@ def test_install_boogie_hints_at_old_sdk(monkeypatch, tmp_path):
     with pytest.raises(tools.InstallError) as e:
         tools.install_boogie(tools_dir=tmp_path)
     assert "too old" in str(e.value) and "--version" in str(e.value)
+
+
+def test_doctor_warns_about_z3_5(monkeypatch, tmp_path):
+    """Boogie is built against Z3 4.x; a 5.x build gets a note, not a failure."""
+    monkeypatch.setattr(tools, "find_boogie", lambda: str(tmp_path / "boogie"))
+    monkeypatch.setattr(tools, "find_z3", lambda: str(tmp_path / "z3"))
+    monkeypatch.setattr(tools, "z3_on_path", lambda: True)
+    monkeypatch.setattr(tools, "_version_of",
+                        lambda exe, args: "Z3 version 5.0.0 - 64 bit")
+    out = io.StringIO()
+    assert tools.doctor(out) is True
+    assert "Boogie targets Z3 4.x" in out.getvalue()

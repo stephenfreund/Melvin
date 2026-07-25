@@ -21,6 +21,7 @@ tools directory (`~/.dotnet/tools`).
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -227,7 +228,14 @@ def doctor(stream=None) -> bool:
         print("  boogie : NOT FOUND — run `melvin-install-boogie`", file=out)
     if z3:
         note = "" if z3_on_path() else "  (not on PATH; passed to Boogie explicitly)"
-        print(f"  z3     : {z3}{note}\n           {_version_of(z3, ['--version'])}", file=out)
+        z3_version = _version_of(z3, ["--version"])
+        print(f"  z3     : {z3}{note}\n           {z3_version}", file=out)
+        # Boogie is built against the Z3 4.x line; newer majors are untested.
+        major = re.search(r"(\d+)\.", z3_version)
+        if major and int(major.group(1)) >= 5:
+            print("           note: Boogie targets Z3 4.x — if verification "
+                  "misbehaves, install a 4.x\n           build and point "
+                  "MELVIN_Z3 at it", file=out)
     else:
         print("  z3     : NOT FOUND — `pip install melvin-verifier[z3]`, or install Z3 "
               "and put it on PATH", file=out)

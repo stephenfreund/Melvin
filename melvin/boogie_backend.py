@@ -412,19 +412,23 @@ class BoogieBackend:
         verified = None
         seen_lines = set()
         base = os.path.basename(bpl_path)
-        # Boogie prints each counterexample model BEFORE the error it explains;
-        # capture the raw block and decode it once the error -- and hence the
-        # obligation's in-scope names -- is known.
+        # Where a counterexample model sits relative to the error it explains
+        # depends on the Boogie version: 2.x prints the model first, 3.x prints
+        # it after.  Both are handled -- a model block is attached to the error
+        # just reported when that one has none yet, and otherwise held for the
+        # next error.  Decoding is deferred until the error, and hence the
+        # obligation's in-scope names, is known.
         pending_data: Optional[Tuple[Dict[str, str], Dict[str, List]]] = None
         model_lines: Optional[List[str]] = None
+        last_diag: Optional[Diagnostic] = None
+        last_oblig: Optional[Obligation] = None
 
-        def decode(oblig: Optional[Obligation]) -> Optional[List[Tuple[str, str]]]:
-            if pending_data is None:
+        def decode(data, oblig: Optional[Obligation]) -> Optional[List[Tuple[str, str]]]:
+            if data is None:
                 return None
             try:
                 in_scope = oblig.in_scope if oblig is not None else None
-                return model_table(pending_data[0], pending_data[1],
-                                   class_fields, in_scope)
+                return model_table(data[0], data[1], class_fields, in_scope)
             except Exception:                # malformed model: no cex, no crash
                 return None
 
@@ -434,12 +438,17 @@ class BoogieBackend:
                 model_lines = []
                 continue
             if stripped == "*** END_MODEL":
+                data = None
                 if model_lines is not None:
                     try:
-                        pending_data = _parse_model_block(model_lines)
+                        data = _parse_model_block(model_lines)
                     except Exception:
-                        pending_data = None
+                        data = None
                 model_lines = None
+                if data is not None and last_diag is not None and last_diag.model is None:
+                    last_diag.model = decode(data, last_oblig)   # Boogie 3.x order
+                else:
+                    pending_data = data                          # Boogie 2.x order
                 continue
             if model_lines is not None:
                 model_lines.append(raw)
@@ -456,14 +465,15 @@ class BoogieBackend:
                 seen_lines.add(bline)
                 oblig = self._nearest_obligation(emitter, bline)
                 if oblig is not None:
-                    diagnostics.append(Diagnostic(oblig.span, oblig.message,
-                                                  model=decode(oblig)))
+                    diag = Diagnostic(oblig.span, oblig.message,
+                                      model=decode(pending_data, oblig))
                 else:
-                    diagnostics.append(
-                        Diagnostic(None, f"Boogie error at {base}({bline}): {m.group('msg')}",
-                                   model=decode(None))
-                    )
+                    diag = Diagnostic(
+                        None, f"Boogie error at {base}({bline}): {m.group('msg')}",
+                        model=decode(pending_data, None))
+                diagnostics.append(diag)
                 pending_data = None
+                last_diag, last_oblig = diag, oblig
                 n_errors += 1
 
         # Detect Boogie parse/type errors (no summary line, unexpected output).

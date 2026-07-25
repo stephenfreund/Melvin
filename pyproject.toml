@@ -45,8 +45,10 @@ dependencies = [
 
 [project.optional-dependencies]
 # `pip install melvin-verifier[z3]` supplies Boogie's prover backend from PyPI, so only
-# Boogie itself has to come from .NET.
-z3 = ["z3-solver>=4.12"]
+# Boogie itself has to come from .NET.  Boogie ships against the Z3 4.x line
+# (its README pins 4.11.2), so the 5.x wheels are excluded here; MELVIN_Z3
+# points at a different build when you want one.
+z3 = ["z3-solver>=4.11,<5"]
 test = [
     "pytest>=7.0",
     "pytest-cov>=4.0",

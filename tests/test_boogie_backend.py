@@ -118,6 +118,47 @@ def test_interpret_maps_error_to_obligation():
     assert res.diagnostics[0].span.start.line == 42
 
 
+_MODEL_BLOCK = """*** MODEL
+v_x -> 6
+v_t -> 6
+tid -> 1
+*** END_MODEL"""
+
+
+def _model_case(order):
+    """Boogie 2.x prints the model before its error; 3.x prints it after."""
+    em = Emitter()
+    em.line("procedure P() {")                    # 1
+    em.assert_("1 == 2", span(42), "bad thing")   # 2
+    em.line("}")                                  # 3
+    err = "prog.bpl(2,3): Error BP5001: This assertion might not hold."
+    body = f"{_MODEL_BLOCK}\n{err}" if order == "before" else f"{err}\n{_MODEL_BLOCK}"
+    proc = FakeProc(stdout=body + "\nBoogie program verifier finished with 0 verified, 1 error")
+    return make_backend()._interpret(proc, em, "prog.bpl")
+
+
+@pytest.mark.parametrize("order", ["before", "after"])
+def test_interpret_attaches_model_in_either_order(order):
+    res = _model_case(order)
+    assert res.n_errors == 1
+    rows = dict(res.diagnostics[0].model or [])
+    assert rows.get("x") == "6", rows
+
+
+def test_interpret_model_only_attaches_once():
+    """A second block after an error that already has a model waits for the next."""
+    em = Emitter()
+    em.assert_("1 == 2", span(42), "first")     # line 1
+    em.assert_("1 == 3", span(43), "second")    # line 2
+    proc = FakeProc(stdout=(
+        "prog.bpl(1,1): Error: nope\n" + _MODEL_BLOCK + "\n"
+        + _MODEL_BLOCK.replace("v_x -> 6", "v_x -> 7") + "\n"
+        "prog.bpl(2,1): Error: nope\n"
+        "Boogie program verifier finished with 0 verified, 2 errors"))
+    res = make_backend()._interpret(proc, em, "prog.bpl")
+    assert [dict(d.model or []).get("x") for d in res.diagnostics] == ["6", "7"]
+
+
 def test_interpret_deduplicates_repeated_error_lines():
     em = Emitter()
     em.assert_("x", span(1), "m")            # line 1
