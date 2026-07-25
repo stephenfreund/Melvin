@@ -180,11 +180,18 @@ def install_boogie(version: Optional[str] = None,
     print("+ " + " ".join(cmd))
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
-        already = "already installed" in (proc.stdout + proc.stderr)
+        output = (proc.stdout or "") + (proc.stderr or "")
+        already = "already installed" in output
         if not already:
+            hint = ""
+            # NU1202: the installed SDK is older than the framework Boogie targets.
+            if "NU1202" in output or "is not compatible with" in output:
+                sdk = _version_of(dotnet, ["--version"])
+                hint = (f"\nYour .NET SDK ({sdk}) is too old for the current Boogie. "
+                        "Install .NET 8 or newer,\nor pick a Boogie that matches your "
+                        "SDK, e.g.:\n  melvin-install-boogie --version 2.16.5\n")
             raise InstallError(
-                "`dotnet tool install` failed:\n"
-                + (proc.stdout or "") + (proc.stderr or "")
+                "`dotnet tool install` failed:\n" + output + hint
                 + "\nTo upgrade an existing install, run:\n"
                 f"  dotnet tool update --tool-path {tools_dir} {BOOGIE_PACKAGE}"
             )

@@ -91,10 +91,14 @@ jobs:
       - name: Build the demo image
         run: docker build -f melvin_server/Dockerfile -t melvin-demo .
 
-  # TEMPORARY: capture raw Boogie model output from a modern Boogie (removed
-  # once the counterexample plumbing is fixed).
+  # TEMPORARY: does Boogie 3.x still emit counterexample models, and does the
+  # Z3 major version matter?  (Removed once the answer is in.)
   debug-model:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        z3: ["z3-solver>=4.12,<5", "z3-solver>=5"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -103,25 +107,16 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
-      - run: pip install -e ".[test,z3]" && melvin-install-boogie && melvin --doctor
-      - name: Emit a failing .bpl and run Boogie by hand
+      - run: |
+          pip install -e ".[test]" "${{ matrix.z3 }}"
+          melvin-install-boogie
+          melvin --doctor
+      - name: Run a failing example and dump the raw Boogie output
         run: |
           set -x
-          cat > /tmp/bad.mml <<'MML'
-          var int x;
-
-          atomic { true } { true } { true }
-          inc()
-            requires true
-            ensures x == \old(x) + 2
-          {
-            x = x + 1;
-          }
-          MML
-          melvin /tmp/bad.mml --emit-bpl /tmp/bad.bpl --counterexample || true
+          melvin examples/assert_fail.mml --emit-bpl /tmp/bad.bpl --counterexample || true
+          test -f /tmp/bad.bpl
           BOOGIE=$(python -c "from melvin.tools import find_boogie; print(find_boogie())")
-          echo "=== boogie version ==="; "$BOOGIE" /version || true
-          echo "=== stdout ==="; "$BOOGIE" /printModel:1 /tmp/bad.bpl > /tmp/out.txt 2> /tmp/err.txt || true
-          cat /tmp/out.txt
-          echo "=== stderr ==="; cat /tmp/err.txt
-          echo "=== grep MODEL ==="; grep -n "MODEL" /tmp/out.txt /tmp/err.txt || echo "no MODEL marker anywhere"
+          "$BOOGIE" /printModel:1 /tmp/bad.bpl > /tmp/out.txt 2>&1 || true
+          echo "=== raw boogie output ==="; cat /tmp/out.txt
+          echo "=== grep MODEL ==="; grep -c "\*\*\* MODEL" /tmp/out.txt || echo "NO MODEL BLOCK"

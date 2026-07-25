@@ -169,3 +169,16 @@ def test_main_installs_and_reports_error(monkeypatch, capsys):
     monkeypatch.setattr(tools, "install_boogie", boom)
     assert tools.main([]) == 1
     assert "no dotnet" in capsys.readouterr().err
+
+
+def test_install_boogie_hints_at_old_sdk(monkeypatch, tmp_path):
+    """A .NET SDK older than Boogie's target framework gets an actionable hint."""
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/dotnet")
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(
+            cmd, 1, "error NU1202: Package Boogie 3.5.6 is not compatible with net5.0", ""))
+    monkeypatch.setattr(tools, "_version_of", lambda exe, args: "5.0.401")
+    with pytest.raises(tools.InstallError) as e:
+        tools.install_boogie(tools_dir=tmp_path)
+    assert "too old" in str(e.value) and "--version" in str(e.value)
