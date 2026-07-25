@@ -16,11 +16,11 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+from . import tools
 from .diagnostics import Diagnostic, Span
 
 # Default wall-clock budget for a single Boogie run: 5 minutes.
@@ -87,6 +87,11 @@ _SUMMARY_RE = re.compile(r"(?P<verified>\d+)\s+verified,\s+(?P<errors>\d+)\s+err
 _MODEL_ENTRY_RE = re.compile(r"^(?P<name>\S+)\s+->\s+(?P<value>.*)$")
 # Opaque model values like T@List!val!0.
 _OPAQUE_RE = re.compile(r"^T@(?P<type>\w+)!val!(?P<n>\d+)$")
+# Two model dialects for maps.  Boogie 2.x exposes two-argument `Select_`
+# graphs keyed by the map value; Boogie 3.x (newer Z3) prints the map value as
+# `(_ (as-array) (k!7))` -- older builds write `(_ as-array k!7)` -- and gives
+# its graph as a separate one-argument `k!7` function entry.
+_AS_ARRAY_RE = re.compile(r"^\(_\s*\(?as-array\)?\s*\(?(?P<fn>[^\s()]+)\)?\s*\)$")
 
 # Effect codes (prelude.py) back to mover letters, for eff/mv model values.
 _EFF_LETTER = {0: "Y", 1: "B", 2: "R", 3: "L", 4: "N", 5: "E"}
@@ -212,6 +217,37 @@ def model_table(raw: Dict[str, str], funcs: Optional[Dict[str, List]] = None,
             seen_objs[disp] = (m.group("type"), v)
         return _clean_value(v)
 
+    def map_rows(mapval: str) -> List[Tuple[str, str]]:
+        """The explicitly listed (key, value) pairs of a map value.
+
+        Handles both model dialects: a `k!n` graph named by an `as-array`
+        value (Boogie 3.x), or the two-argument `Select_` rows keyed by the
+        map value (Boogie 2.x)."""
+        mapval = mapval.strip().strip("|")
+        m = _AS_ARRAY_RE.match(mapval)
+        if m:
+            return sorted((args[0].strip("|"), val)
+                          for args, val in funcs.get(m.group("fn"), [])
+                          if len(args) == 1 and args[0] != "else")
+        return sorted((k, v) for (mv, k), v in select.items() if mv == mapval)
+
+    def map_default(mapval: str) -> Optional[str]:
+        """A map's `else` row: in a first-order model that IS the value of
+        every key not listed explicitly."""
+        m = _AS_ARRAY_RE.match(mapval.strip().strip("|"))
+        if not m:
+            return None
+        for args, val in funcs.get(m.group("fn"), []):
+            if args == ("else",):
+                return val
+        return None
+
+    def map_get(mapval: str, key: str) -> Optional[str]:
+        for k, v in map_rows(mapval):
+            if k == key:
+                return v
+        return map_default(mapval)
+
     def heap_rows(var: str, base: str) -> List[Tuple[str, str]]:
         """Decode a field-map variable f_<C>_<fld> into per-object rows."""
         for cname in sorted(class_fields, key=len, reverse=True):
@@ -220,10 +256,9 @@ def model_table(raw: Dict[str, str], funcs: Optional[Dict[str, List]] = None,
                 mapval = _last_incarnation(raw, base)
                 if mapval is None:
                     return []
-                mapval = mapval.strip("|")
                 out = []
-                for (m, o), val in sorted(select.items()):
-                    if m == mapval and o not in nulls:
+                for o, val in map_rows(mapval):
+                    if o not in nulls:
                         out.append((f"{clean(o)}.{fld}", clean(val)))
                 return out
         return []
@@ -239,21 +274,18 @@ def model_table(raw: Dict[str, str], funcs: Optional[Dict[str, List]] = None,
         mapval = _last_incarnation(raw, base)
         if mapval is None:
             return []
-        mapval = mapval.strip("|")
         out: List[Tuple[str, str]] = []
         if var.startswith("len_"):
-            for (m, a), val in sorted(select.items()):
-                if m == mapval and a not in nulls:
+            for a, val in map_rows(mapval):
+                if a not in nulls:
                     out.append((f"{clean(a)}.length", clean(val)))
             return out
-        # elems: the outer graph yields each array's inner [int]T map value,
-        # the inner graph that map's per-index elements.
-        for (m, a), inner in sorted(select.items()):
-            if m != mapval or a in nulls:
+        # elems: the outer map yields each array's inner [int]T map value,
+        # whose own rows are that array's per-index elements.
+        for a, inner in map_rows(mapval):
+            if a in nulls:
                 continue
-            inner = inner.strip("|")
-            elems = [(i, val) for (m2, i), val in select.items() if m2 == inner]
-            for i, val in sorted(elems, key=lambda e: _idx_key(e[0])):
+            for i, val in sorted(map_rows(inner), key=lambda e: _idx_key(e[0])):
                 out.append((f"{clean(a)}[{_clean_value(i)}]", clean(val)))
         return out
 
@@ -289,7 +321,7 @@ def model_table(raw: Dict[str, str], funcs: Optional[Dict[str, List]] = None,
                 else f"v_len_{cname[4:]}")
         mapval = _last_incarnation(raw, base)
         if mapval is not None:
-            val = select.get((mapval.strip("|"), rawref))
+            val = map_get(mapval, rawref)
             if val is not None:
                 return val
         token = {"int": "$int", "bool": "$bool"}.get(fty, fty)
@@ -332,29 +364,31 @@ class BoogieBackend:
 
     @staticmethod
     def _discover() -> str:
-        env = os.environ.get("MELVIN_BOOGIE")
-        if env and os.path.exists(env):
-            return env
-        for cand in ("boogie", "Boogie"):
-            found = shutil.which(cand)
-            if found:
-                return found
-        # Fall back to the Boogie shipped with the Synchronicity workspace.
-        guesses = [
-            os.path.expanduser(
-                "~/other/Synchronicity/workspace/Synchronicity/boogie/Binaries/boogie"
-            ),
-        ]
-        for g in guesses:
-            if os.path.exists(g):
-                return g
+        """Locate Boogie (MELVIN_BOOGIE, PATH, then Melvin's tools directory)."""
+        found = tools.find_boogie()
+        if found:
+            return found
         raise BoogieError(
-            "could not find the Boogie executable; set MELVIN_BOOGIE to its path"
+            "could not find the Boogie executable; run `melvin-install-boogie` "
+            "(or set MELVIN_BOOGIE to the path of an existing install)"
         )
+
+    def _prover_args(self) -> List[str]:
+        """Tell Boogie where Z3 is when it is not on PATH.
+
+        `pip install melvin[z3]` drops the `z3` binary in the interpreter's
+        script directory, which need not be on PATH (pipx, uv tool, an
+        unactivated venv).  Boogie only searches PATH, so hand it the path.
+        """
+        if tools.z3_on_path():
+            return []
+        z3 = tools.find_z3()
+        return [f"/proverOpt:PROVER_PATH={z3}"] if z3 else []
 
     def run_raw(self, bpl_path: str, timeout: int = 120,
                 extra: Optional[List[str]] = None) -> subprocess.CompletedProcess:
-        cmd = [self.boogie_path, *self.extra_args, *(extra or []), bpl_path]
+        cmd = [self.boogie_path, *self.extra_args, *self._prover_args(),
+               *(extra or []), bpl_path]
         try:
             return subprocess.run(
                 cmd, capture_output=True, text=True, timeout=timeout
@@ -410,19 +444,23 @@ class BoogieBackend:
         verified = None
         seen_lines = set()
         base = os.path.basename(bpl_path)
-        # Boogie prints each counterexample model BEFORE the error it explains;
-        # capture the raw block and decode it once the error -- and hence the
-        # obligation's in-scope names -- is known.
+        # Where a counterexample model sits relative to the error it explains
+        # depends on the Boogie version: 2.x prints the model first, 3.x prints
+        # it after.  Both are handled -- a model block is attached to the error
+        # just reported when that one has none yet, and otherwise held for the
+        # next error.  Decoding is deferred until the error, and hence the
+        # obligation's in-scope names, is known.
         pending_data: Optional[Tuple[Dict[str, str], Dict[str, List]]] = None
         model_lines: Optional[List[str]] = None
+        last_diag: Optional[Diagnostic] = None
+        last_oblig: Optional[Obligation] = None
 
-        def decode(oblig: Optional[Obligation]) -> Optional[List[Tuple[str, str]]]:
-            if pending_data is None:
+        def decode(data, oblig: Optional[Obligation]) -> Optional[List[Tuple[str, str]]]:
+            if data is None:
                 return None
             try:
                 in_scope = oblig.in_scope if oblig is not None else None
-                return model_table(pending_data[0], pending_data[1],
-                                   class_fields, in_scope)
+                return model_table(data[0], data[1], class_fields, in_scope)
             except Exception:                # malformed model: no cex, no crash
                 return None
 
@@ -432,12 +470,17 @@ class BoogieBackend:
                 model_lines = []
                 continue
             if stripped == "*** END_MODEL":
+                data = None
                 if model_lines is not None:
                     try:
-                        pending_data = _parse_model_block(model_lines)
+                        data = _parse_model_block(model_lines)
                     except Exception:
-                        pending_data = None
+                        data = None
                 model_lines = None
+                if data is not None and last_diag is not None and last_diag.model is None:
+                    last_diag.model = decode(data, last_oblig)   # Boogie 3.x order
+                else:
+                    pending_data = data                          # Boogie 2.x order
                 continue
             if model_lines is not None:
                 model_lines.append(raw)
@@ -454,14 +497,15 @@ class BoogieBackend:
                 seen_lines.add(bline)
                 oblig = self._nearest_obligation(emitter, bline)
                 if oblig is not None:
-                    diagnostics.append(Diagnostic(oblig.span, oblig.message,
-                                                  model=decode(oblig)))
+                    diag = Diagnostic(oblig.span, oblig.message,
+                                      model=decode(pending_data, oblig))
                 else:
-                    diagnostics.append(
-                        Diagnostic(None, f"Boogie error at {base}({bline}): {m.group('msg')}",
-                                   model=decode(None))
-                    )
+                    diag = Diagnostic(
+                        None, f"Boogie error at {base}({bline}): {m.group('msg')}",
+                        model=decode(pending_data, None))
+                diagnostics.append(diag)
                 pending_data = None
+                last_diag, last_oblig = diag, oblig
                 n_errors += 1
 
         # Detect Boogie parse/type errors (no summary line, unexpected output).

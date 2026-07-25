@@ -21,29 +21,63 @@ Try our Melvin system on the [web](https://melvin-demo.gss8b1ryfh8jc.us-east-1.c
 
 ## Installation
 
-**Requirements:** Python 3.8+ and the **Boogie** verifier (with a Z3 backend).
+**Requirements:** Python 3.9+ and the **Boogie** verifier (with a Z3 backend).
 
-1. Install Boogie and Z3.  Any of these works:
-   * `dotnet tool install --global Boogie` (needs the .NET SDK; then `boogie` is
-     on your `PATH`), or
-   * download a Boogie release, or use the copy bundled with the Anchor /
-     Synchronicity distributions.
-2. Install this package (adds a `melvin` command):
+```bash
+pip install "melvin-verifier[z3]"     # the verifier, the demo server, and Z3
+melvin-install-boogie        # installs Boogie (needs the .NET SDK)
+melvin --doctor              # report what Melvin can see
+```
 
-   ```bash
-   cd Melvin
-   pip install -e .
-   ```
+That gives you four commands: `melvin` (verify), `melvin-run` (the reference
+interpreter), `melvin-server` (the web demo), and `melvin-install-boogie`.
 
-3. Point the tool at your Boogie executable (only needed if `boogie` is not on
-   your `PATH`):
+**Why two steps?**  Z3 has a PyPI wheel, so the `[z3]` extra installs it like
+any Python dependency.  Boogie does not: it is a .NET tool, so it has to come
+from NuGet.  `melvin-install-boogie` runs
 
-   ```bash
-   export MELVIN_BOOGIE=/path/to/boogie
-   ```
+```bash
+dotnet tool install --tool-path ~/.melvin/tools Boogie
+```
 
-   Boogie is located, in order, from `MELVIN_BOOGIE`, then `boogie`/`Boogie`
-   on `PATH`, then a bundled fallback path.
+which needs the .NET SDK (`brew install dotnet-sdk`,
+`apt-get install dotnet-sdk-8.0`, `winget install Microsoft.DotNet.SDK.8`, or
+<https://dotnet.microsoft.com/download>).  Installing into `~/.melvin/tools`
+rather than globally keeps it out of your `PATH`; Melvin looks there itself.
+Already have Boogie?  `melvin-install-boogie` leaves it alone (`--force`
+overrides), or you can just point Melvin at it:
+
+```bash
+export MELVIN_BOOGIE=/path/to/boogie
+```
+
+The `[z3]` extra installs a Z3 from the **4.x** line, which is what Boogie is
+built against (its README pins 4.11.2); `MELVIN_Z3` points at a different build
+if you have one.
+
+Boogie is located, in order, from `MELVIN_BOOGIE`, then `boogie`/`Boogie` on
+`PATH`, then `~/.melvin/tools`, then `~/.dotnet/tools`.  Z3 is found from
+`MELVIN_Z3`, then `PATH`, then the Python environment's script directory —
+that last case (a `pip install melvin-verifier[z3]` under pipx/uv, where the script
+directory is not on `PATH`) is handled by passing Boogie an explicit
+`/proverOpt:PROVER_PATH`.  `melvin --doctor` prints exactly what was found.
+
+### From a checkout
+
+```bash
+git clone https://github.com/stephenfreund/Melvin.git
+cd Melvin
+pip install -e ".[dev]"      # verifier + demo server + Z3 + test/build tools
+melvin-install-boogie
+pytest tests/ -q
+```
+
+The `.mml` examples ship with the package, so pip users have them too —
+`melvin --doctor` prints the directory.
+
+> The distribution is named **`melvin-verifier`** on PyPI (plain `melvin` is
+> taken by an unrelated project); the import package and the commands are
+> `melvin`.
 
 ## Running it
 
@@ -181,18 +215,44 @@ There is a browser front end (examples menu, editor with error squiggles,
 generated-Boogie view, and a Run-all-interleavings button) backed by a small
 verification server that runs locally or on Amazon Lightsail:
 
+The server ships with the package, so no extra install is needed:
+
 ```bash
-pip install -r melvin_server/requirements.txt
-uvicorn melvin_server.app:app --reload      # then open http://127.0.0.1:8000
+melvin-server                               # then open http://127.0.0.1:8000
+melvin-server --reload                      # or: uvicorn melvin_server.app:app --reload
 ```
 
 See [`melvin_server/README.md`](melvin_server/README.md) for the Docker image and the Lightsail
 deployment script.
 
+## Releasing
+
+Version lives in exactly one place: `__version__` in
+[`melvin/__init__.py`](melvin/__init__.py) (`pyproject.toml` reads it).  To cut
+a release:
+
+1. bump `__version__`, commit, push;
+2. publish a GitHub Release whose tag is `v<that version>`.
+
+[`.github/workflows/release.yml`](.github/workflows/release.yml) then checks
+that the tag and `__version__` agree, builds the sdist + wheel, smoke-tests the
+wheel in a clean environment, publishes to PyPI, and redeploys the demo image
+to Lightsail.  [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the
+test suite (Python 3.9/3.11/3.13, with Boogie installed the same way users
+install it), the packaging smoke test, and the Docker build on every push.
+
+One-time repository setup for the release workflow:
+
+| Setting | Purpose |
+|---|---|
+| PyPI [trusted publisher](https://docs.pypi.org/trusted-publishers/) for `release.yml`, or secret `PYPI_API_TOKEN` | publishing to PyPI (trusted publishing is used when the secret is absent) |
+| secret `AWS_ROLE_ARN` (OIDC) or `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` | Lightsail deploy — skipped, not failed, when unset |
+| variables `AWS_REGION`, `LIGHTSAIL_SERVICE` | region and service name (default `us-east-1`, `melvin-demo`) |
+
 ## Running the tests
 
 ```bash
-pip install -e .
+pip install -e ".[test]"
 pytest tests/ -q
 ```
 
@@ -582,6 +642,7 @@ consistent across the threads that may touch them.
 | `melvin/checker.py`      | top-level driver                                  |
 | `melvin/cli.py`          | `melvin` command-line interface (verify)      |
 | `melvin/interp.py`       | reference interpreter + `melvin-run` (execute + oracle) |
+| `melvin/tools.py`        | find/install Boogie + Z3 (`melvin-install-boogie`, `--doctor`) |
 
 ---
 

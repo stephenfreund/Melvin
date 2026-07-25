@@ -1,33 +1,92 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "melvin"
-version = "0.1.0"
+# Distribution name on PyPI.  Plain `melvin` is already claimed by an unrelated
+# project (https://pypi.org/project/melvin/), so the distribution is
+# `melvin-verifier`; the import package and the console scripts are still
+# `melvin`.  Changing this name means updating the PyPI trusted-publisher
+# configuration and the install lines in README.md / melvin_server/README.md.
+name = "melvin-verifier"
+dynamic = ["version"]
 description = "Melvin: a verifier for Mover Logic (reduction-based rely-guarantee) using Boogie"
 readme = "README.md"
-requires-python = ">=3.8"
-license = { text = "Apache-2.0" }
-authors = [{ name = "Melvin implementation" }]
-keywords = ["verification", "concurrency", "reduction", "rely-guarantee", "boogie"]
+requires-python = ">=3.9"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Stephen Freund", email = "sfreund@williams.edu" }]
+keywords = [
+    "verification", "concurrency", "reduction", "rely-guarantee",
+    "boogie", "mover-logic", "static-analysis",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
+# The verifier itself is pure-stdlib Python; the web demo server ships with it
+# so `melvin-server` works out of the box.  The one *external* dependency is the
+# Boogie executable (see `melvin-install-boogie` and the [z3] extra below).
 dependencies = [
-    "pytest>=7.0",
-    # web demo server (demo/server/app.py) + its tests
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
+]
+
+[project.optional-dependencies]
+# `pip install melvin-verifier[z3]` supplies Boogie's prover backend from PyPI, so only
+# Boogie itself has to come from .NET.  Boogie ships against the Z3 4.x line
+# (its README pins 4.11.2), so the 5.x wheels are excluded here; MELVIN_Z3
+# points at a different build when you want one.
+z3 = ["z3-solver>=4.11,<5"]
+test = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
     "httpx>=0.27",
 ]
+dev = [
+    "melvin-verifier[test,z3]",   # everything needed to run the suite and build releases
+    "build>=1.0",
+    "twine>=5.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/stephenfreund/Melvin"
+Repository = "https://github.com/stephenfreund/Melvin"
+Issues = "https://github.com/stephenfreund/Melvin/issues"
 
 [project.scripts]
 melvin = "melvin.cli:main"
 melvin-run = "melvin.interp:main"
 melvin-server = "melvin_server.app:main"
+melvin-install-boogie = "melvin.tools:main"
 
+[tool.setuptools.dynamic]
+version = { attr = "melvin.__version__" }
+
+# `examples/` lives at the repo root but ships inside the wheel as
+# `melvin/examples/`, so `pip install melvin` gets the sample programs
+# (melvin.tools.examples_dir() finds them either way).
 [tool.setuptools]
-packages = ["melvin", "melvin_server"]
+packages = ["melvin", "melvin.examples", "melvin_server"]
+
+[tool.setuptools.package-dir]
+melvin = "melvin"
+"melvin.examples" = "examples"
+melvin_server = "melvin_server"
 
 [tool.setuptools.package-data]
+"melvin.examples" = ["*.mml"]
 melvin_server = ["static/**/*"]
 
 [tool.pytest.ini_options]

@@ -118,6 +118,47 @@ def test_interpret_maps_error_to_obligation():
     assert res.diagnostics[0].span.start.line == 42
 
 
+_MODEL_BLOCK = """*** MODEL
+v_x -> 6
+v_t -> 6
+tid -> 1
+*** END_MODEL"""
+
+
+def _model_case(order):
+    """Boogie 2.x prints the model before its error; 3.x prints it after."""
+    em = Emitter()
+    em.line("procedure P() {")                    # 1
+    em.assert_("1 == 2", span(42), "bad thing")   # 2
+    em.line("}")                                  # 3
+    err = "prog.bpl(2,3): Error BP5001: This assertion might not hold."
+    body = f"{_MODEL_BLOCK}\n{err}" if order == "before" else f"{err}\n{_MODEL_BLOCK}"
+    proc = FakeProc(stdout=body + "\nBoogie program verifier finished with 0 verified, 1 error")
+    return make_backend()._interpret(proc, em, "prog.bpl")
+
+
+@pytest.mark.parametrize("order", ["before", "after"])
+def test_interpret_attaches_model_in_either_order(order):
+    res = _model_case(order)
+    assert res.n_errors == 1
+    rows = dict(res.diagnostics[0].model or [])
+    assert rows.get("x") == "6", rows
+
+
+def test_interpret_model_only_attaches_once():
+    """A second block after an error that already has a model waits for the next."""
+    em = Emitter()
+    em.assert_("1 == 2", span(42), "first")     # line 1
+    em.assert_("1 == 3", span(43), "second")    # line 2
+    proc = FakeProc(stdout=(
+        "prog.bpl(1,1): Error: nope\n" + _MODEL_BLOCK + "\n"
+        + _MODEL_BLOCK.replace("v_x -> 6", "v_x -> 7") + "\n"
+        "prog.bpl(2,1): Error: nope\n"
+        "Boogie program verifier finished with 0 verified, 2 errors"))
+    res = make_backend()._interpret(proc, em, "prog.bpl")
+    assert [dict(d.model or []).get("x") for d in res.diagnostics] == ["6", "7"]
+
+
 def test_interpret_deduplicates_repeated_error_lines():
     em = Emitter()
     em.assert_("x", span(1), "m")            # line 1
@@ -150,6 +191,66 @@ def test_interpret_unmapped_error_line_still_reported():
     assert not res.ok and res.n_errors == 1
 
 
+# ------------------------------------------- model dialects (Boogie 2.x / 3.x)
+
+# Excerpt of a real Boogie 3.5.6 model: maps are `(_ (as-array) (k!n))` values
+# whose graphs are separate `k!n` entries, not two-argument `Select_` graphs.
+_AS_ARRAY_MODEL = """tid -> 1
+v_b@0 -> T@Box!val!0
+v_a@0 -> T@Arr_Box_data!val!0
+null_Box -> T@Box!val!1
+null_Arr_Box_data -> T@Arr_Box_data!val!2
+v_f_Box_data@1 -> (_ (as-array) (k!0))
+v_len_Box_data@0 -> (_ (as-array) (k!11))
+v_elems_Box_data@1 -> (_ (as-array) (k!7))
+k!0 -> {
+  T@Box!val!0 -> T@Arr_Box_data!val!0
+  else -> T@Arr_Box_data!val!2
+}
+k!11 -> {
+  T@Arr_Box_data!val!0 -> 3
+  else -> 9
+}
+k!6 -> {
+  0 -> 4
+  1 -> 7
+  else -> 8
+}
+k!7 -> {
+  T@Arr_Box_data!val!0 -> (_ (as-array) (k!6))
+  else -> (_ (as-array) (k!6))
+}"""
+
+
+def test_model_table_decodes_as_array_maps():
+    """Boogie 3.x map values resolve through their k!n graphs."""
+    from melvin.boogie_backend import model_table, _parse_model_block
+    raw, funcs = _parse_model_block(_AS_ARRAY_MODEL.splitlines())
+    rows = dict(model_table(raw, funcs, {"Box": {"data": "Arr_Box_data"}}))
+    assert rows["b"] == "Box#0"
+    assert rows["Box#0.data"] == "Arr_Box_data#0"
+    assert rows["Arr_Box_data#0.length"] == "3"
+    # the failing comparison's elements, from the inner map's graph
+    assert rows["Arr_Box_data#0[0]"] == "4"
+    assert rows["Arr_Box_data#0[1]"] == "7"
+
+
+def test_model_table_still_decodes_select_graphs():
+    """The Boogie 2.x dialect (two-argument Select_ graphs) keeps working."""
+    from melvin.boogie_backend import model_table, _parse_model_block
+    text = """tid -> 1
+v_b@0 -> T@Box!val!0
+null_Box -> T@Box!val!1
+v_f_Box_data@0 -> |T@[Box]int!val!0|
+Select_[Box]$int -> {
+  T@[Box]int!val!0 T@Box!val!0 -> 5
+  else -> 0
+}"""
+    raw, funcs = _parse_model_block(text.splitlines())
+    rows = dict(model_table(raw, funcs, {"Box": {"data": "int"}}))
+    assert rows["Box#0.data"] == "5"
+
+
 # ------------------------------------------------------------ discovery
 
 def test_discovery_via_env(monkeypatch, tmp_path):
@@ -161,11 +262,24 @@ def test_discovery_via_env(monkeypatch, tmp_path):
 
 
 def test_discovery_failure(monkeypatch):
-    monkeypatch.delenv("MELVIN_BOOGIE", raising=False)
-    monkeypatch.setattr("shutil.which", lambda name: None)
-    monkeypatch.setattr("os.path.exists", lambda p: False)
-    with pytest.raises(BoogieError):
+    monkeypatch.setattr("melvin.tools.find_boogie", lambda: None)
+    with pytest.raises(BoogieError) as e:
         BoogieBackend()
+    assert "melvin-install-boogie" in str(e.value)
+
+
+def test_prover_path_passed_when_z3_off_path(monkeypatch, tmp_path):
+    """Z3 from the `melvin[z3]` wheel need not be on PATH; Boogie is told where."""
+    fake = tmp_path / "boogie"
+    fake.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("MELVIN_BOOGIE", str(fake))
+    monkeypatch.setattr("melvin.tools.z3_on_path", lambda: False)
+    monkeypatch.setattr("melvin.tools.find_z3", lambda: "/somewhere/z3")
+    b = BoogieBackend()
+    assert b._prover_args() == ["/proverOpt:PROVER_PATH=/somewhere/z3"]
+
+    monkeypatch.setattr("melvin.tools.z3_on_path", lambda: True)
+    assert b._prover_args() == []
 
 
 # -------------------------------------------------------------- timeout

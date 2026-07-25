@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Boogie is a .NET tool, so the toolchain needs a .NET SDK.  Z3 comes
+      # from PyPI via the [z3] extra below.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Install Melvin (with test + Z3 extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test,z3]"
+
+      # Dogfoods the installer we ship to users.
+      - name: Install Boogie
+        run: melvin-install-boogie
+
+      - name: Toolchain report
+        run: melvin --doctor
+
+      - name: Run the test suite
+        run: pytest tests/ -q
+
+      - name: Verify a bundled example end to end
+        run: melvin examples/counter.mml
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check dist/*
+
+      - name: Install the wheel in a clean environment and smoke-test it
+        run: |
+          python -m venv /tmp/fresh
+          /tmp/fresh/bin/pip install dist/*.whl
+          /tmp/fresh/bin/melvin --version
+          # The examples must ship inside the wheel (melvin/examples/).
+          /tmp/fresh/bin/python -c "
+          from melvin.tools import examples_dir
+          d = examples_dir()
+          assert d is not None and (d / 'counter.mml').is_file(), d
+          import melvin_server.app as app
+          assert app.EXAMPLES_DIR.is_dir(), app.EXAMPLES_DIR
+          print('bundled examples:', d)
+          "
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The image build ends in `melvin examples/counter.mml`, so this also
+      # checks the Python <-> Boogie <-> Z3 toolchain inside the container.
+      - name: Build the demo image
+        run: docker build -f melvin_server/Dockerfile -t melvin-demo .

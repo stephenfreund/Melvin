@@ -22,11 +22,17 @@ melvin_server/
 
 Requires a working `melvin` install with Boogie (see the top-level README).
 
+The server is part of the `melvin` distribution, so `pip install melvin` is all
+it takes:
+
 ```bash
-pip install -r melvin_server/requirements.txt
-uvicorn melvin_server.app:app --reload        # from the repository root
+melvin-server --reload                        # or: uvicorn melvin_server.app:app --reload
 # open http://127.0.0.1:8000
 ```
+
+The examples menu is served from the bundled `.mml` files (a checkout's
+`examples/`, or `melvin/examples/` in an installed wheel); `MELVIN_EXAMPLES_DIR`
+overrides that.
 
 ## Run locally (Docker)
 
@@ -64,6 +70,9 @@ if it doesn't exist, pushes the image, deploys it with a health check on
 (Lightsail terminates TLS for you).
 
 * **Update**: re-run the script; it pushes a new image version and redeploys.
+  Publishing a GitHub Release does this automatically — see the `lightsail` job
+  in [`.github/workflows/release.yml`](../.github/workflows/release.yml), which
+  runs this same script with credentials from repository secrets.
 * **Cost**: the `small` power is ~$10/month while the service exists
   (`micro` ~$7 is enough for light traffic; verification is CPU-bound, so
   avoid `nano`).

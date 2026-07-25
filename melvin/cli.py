@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+from . import tools
+from . import __version__
 from .annotate import mover_annotations, render_listing
 from .boogie_backend import DEFAULT_TIMEOUT
 from .checker import check_program
@@ -23,7 +25,10 @@ def main(argv=None) -> int:
         prog="melvin",
         description="Verify Mover Logic Language (.mll) programs using Boogie.",
     )
-    ap.add_argument("files", nargs="+", help="MLL source files to verify")
+    ap.add_argument("files", nargs="*", help="MLL source files to verify")
+    ap.add_argument("--version", action="version", version=f"melvin {__version__}")
+    ap.add_argument("--doctor", action="store_true",
+                    help="report the Boogie/Z3 toolchain Melvin can see and exit")
     ap.add_argument("--boogie", help="path to the Boogie executable")
     ap.add_argument("--emit-bpl", metavar="PATH",
                     help="write the generated Boogie program to PATH (for the "
@@ -43,6 +48,10 @@ def main(argv=None) -> int:
                          "each error")
     args = ap.parse_args(argv)
 
+    if args.doctor:
+        return EXIT_OK if tools.doctor() else EXIT_FAILED
+    if not args.files:
+        ap.error("no input files (use --doctor to check the toolchain)")
     if args.timeout <= 0:
         ap.error("--timeout must be a positive number of seconds")
 
