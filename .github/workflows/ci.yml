@@ -90,3 +90,38 @@ jobs:
       # checks the Python <-> Boogie <-> Z3 toolchain inside the container.
       - name: Build the demo image
         run: docker build -f melvin_server/Dockerfile -t melvin-demo .
+
+  # TEMPORARY: capture raw Boogie model output from a modern Boogie (removed
+  # once the counterexample plumbing is fixed).
+  debug-model:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - run: pip install -e ".[test,z3]" && melvin-install-boogie && melvin --doctor
+      - name: Emit a failing .bpl and run Boogie by hand
+        run: |
+          set -x
+          cat > /tmp/bad.mml <<'MML'
+          var int x;
+
+          atomic { true } { true } { true }
+          inc()
+            requires true
+            ensures x == \old(x) + 2
+          {
+            x = x + 1;
+          }
+          MML
+          melvin /tmp/bad.mml --emit-bpl /tmp/bad.bpl --counterexample || true
+          BOOGIE=$(python -c "from melvin.tools import find_boogie; print(find_boogie())")
+          echo "=== boogie version ==="; "$BOOGIE" /version || true
+          echo "=== stdout ==="; "$BOOGIE" /printModel:1 /tmp/bad.bpl > /tmp/out.txt 2> /tmp/err.txt || true
+          cat /tmp/out.txt
+          echo "=== stderr ==="; cat /tmp/err.txt
+          echo "=== grep MODEL ==="; grep -n "MODEL" /tmp/out.txt /tmp/err.txt || echo "no MODEL marker anywhere"
