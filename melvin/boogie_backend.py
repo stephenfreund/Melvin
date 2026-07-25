@@ -16,11 +16,11 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+from . import tools
 from .diagnostics import Diagnostic, Span
 
 # Default wall-clock budget for a single Boogie run: 5 minutes.
@@ -332,29 +332,31 @@ class BoogieBackend:
 
     @staticmethod
     def _discover() -> str:
-        env = os.environ.get("MELVIN_BOOGIE")
-        if env and os.path.exists(env):
-            return env
-        for cand in ("boogie", "Boogie"):
-            found = shutil.which(cand)
-            if found:
-                return found
-        # Fall back to the Boogie shipped with the Synchronicity workspace.
-        guesses = [
-            os.path.expanduser(
-                "~/other/Synchronicity/workspace/Synchronicity/boogie/Binaries/boogie"
-            ),
-        ]
-        for g in guesses:
-            if os.path.exists(g):
-                return g
+        """Locate Boogie (MELVIN_BOOGIE, PATH, then Melvin's tools directory)."""
+        found = tools.find_boogie()
+        if found:
+            return found
         raise BoogieError(
-            "could not find the Boogie executable; set MELVIN_BOOGIE to its path"
+            "could not find the Boogie executable; run `melvin-install-boogie` "
+            "(or set MELVIN_BOOGIE to the path of an existing install)"
         )
+
+    def _prover_args(self) -> List[str]:
+        """Tell Boogie where Z3 is when it is not on PATH.
+
+        `pip install melvin[z3]` drops the `z3` binary in the interpreter's
+        script directory, which need not be on PATH (pipx, uv tool, an
+        unactivated venv).  Boogie only searches PATH, so hand it the path.
+        """
+        if tools.z3_on_path():
+            return []
+        z3 = tools.find_z3()
+        return [f"/proverOpt:PROVER_PATH={z3}"] if z3 else []
 
     def run_raw(self, bpl_path: str, timeout: int = 120,
                 extra: Optional[List[str]] = None) -> subprocess.CompletedProcess:
-        cmd = [self.boogie_path, *self.extra_args, *(extra or []), bpl_path]
+        cmd = [self.boogie_path, *self.extra_args, *self._prover_args(),
+               *(extra or []), bpl_path]
         try:
             return subprocess.run(
                 cmd, capture_output=True, text=True, timeout=timeout

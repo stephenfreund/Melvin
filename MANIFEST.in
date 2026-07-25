@@ -1,0 +1,15 @@
+# Extra files for the source distribution (the wheel gets examples/ and the
+# server's static assets through [tool.setuptools.package-data]).
+include LICENSE
+include README.md
+include CLAUDE.md
+include MANIFEST.in
+recursive-include examples *.mml
+recursive-include tests *.py
+recursive-include melvin_server/static *
+include melvin_server/Dockerfile
+include melvin_server/README.md
+recursive-include melvin_server/deploy *
+global-exclude *.py[cod]
+global-exclude .DS_Store
+prune **/__pycache__

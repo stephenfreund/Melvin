@@ -40,6 +40,7 @@ from melvin.boogie_backend import BoogieBackend, BoogieError
 from melvin.checker import check_source
 from melvin.diagnostics import NO_SPAN, MelvinError
 from melvin.parser import parse
+from melvin.tools import examples_dir
 from melvin.types import check_types
 
 from .examples_manifest import BY_NAME, EXAMPLES, GROUPS
@@ -48,7 +49,9 @@ from .examples_manifest import BY_NAME, EXAMPLES, GROUPS
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-EXAMPLES_DIR = Path(os.environ.get("MELVIN_EXAMPLES_DIR", REPO_ROOT / "examples"))
+# In a checkout the examples sit at the repository root; in an installed wheel
+# they ship inside the package (melvin/examples).  MELVIN_EXAMPLES_DIR wins.
+EXAMPLES_DIR = examples_dir() or (REPO_ROOT / "examples")
 
 VERIFY_TIMEOUT = int(os.environ.get("MELVIN_DEMO_VERIFY_TIMEOUT", "30"))   # s
 RUN_TIMEOUT = int(os.environ.get("MELVIN_DEMO_RUN_TIMEOUT", "10"))         # s

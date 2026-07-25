@@ -14,8 +14,10 @@ Architecturally inspired by the Anchor / Synchronicity verifiers in
 ## Commands
 
 ```bash
-pip install -e .                                 # install (adds `melvin`, `melvin-run`, `melvin-server`)
-export MELVIN_BOOGIE=/path/to/boogie          # if boogie isn't on PATH
+pip install -e ".[dev]"                          # install (adds `melvin`, `melvin-run`, `melvin-server`, `melvin-install-boogie`)
+melvin-install-boogie                            # `dotnet tool install` Boogie into ~/.melvin/tools
+melvin --doctor                                  # report the Boogie/Z3/examples Melvin can see
+export MELVIN_BOOGIE=/path/to/boogie          # or point at an existing boogie
 melvin examples/counter.mml                   # verify a program
 melvin examples/counter.mml --show-bpl        # print generated Boogie
 melvin examples/counter.mml --emit-bpl out.bpl   # save generated Boogie
@@ -24,10 +26,33 @@ pytest tests/ -q                                  # run tests (prover tests self
 pytest tests/test_effects.py::test_seq_matches_paper_table   # a single test
 ```
 
-Boogie discovery order: `MELVIN_BOOGIE` env var → `boogie`/`Boogie` on PATH
-→ a fallback path in `boogie_backend.py`. There is **no** real Boogie Python
-binding (the PyPI `boogie` package is an unrelated Django library); the tool
-shells out to the executable.
+Toolchain discovery lives in `melvin/tools.py` (the only module that knows how
+to find or install the external tools): Boogie from `MELVIN_BOOGIE` → PATH →
+`~/.melvin/tools` (where `melvin-install-boogie` puts it) → `~/.dotnet/tools` →
+a legacy Synchronicity-checkout path; Z3 from `MELVIN_Z3` → PATH → the Python
+environment's script dir (where the `melvin-verifier[z3]` extra's `z3-solver` wheel lands
+it), in which case `BoogieBackend._prover_args` passes Boogie
+`/proverOpt:PROVER_PATH=`. There is **no** real Boogie Python binding (the PyPI
+`boogie` package is an unrelated Django library); the tool shells out to the
+executable.
+
+## Packaging and release
+
+`melvin` is published to PyPI. Single source of version: `__version__` in
+`melvin/__init__.py` (`pyproject.toml` reads it via `dynamic`/`attr`). The wheel
+ships `examples/` *inside* the package as `melvin/examples/` (a `package-dir`
+mapping in `pyproject.toml`); `tools.examples_dir()` resolves either layout and
+the demo server uses it. Base dependencies deliberately include the demo server
+(fastapi/uvicorn) so `pip install melvin` can run `melvin-server`; extras are
+`[z3]` (prover binary from PyPI), `[test]`, `[dev]`.
+
+`.github/workflows/ci.yml` runs the suite on 3.9/3.11/3.13 (installing Boogie
+with the shipped `melvin-install-boogie`), builds + smoke-tests the wheel, and
+builds the Docker image. `.github/workflows/release.yml` fires on a published
+GitHub Release: it checks the tag against `__version__`, publishes to PyPI
+(trusted publishing, or `PYPI_API_TOKEN`), then redeploys the demo image to
+Lightsail via `melvin_server/deploy/deploy-lightsail.sh` (skipped when no AWS
+credentials are configured).
 
 ## Pipeline / architecture
 
@@ -41,7 +66,8 @@ shells out to the executable.
 | `prelude.py` | fixed Boogie prelude: the effect algebra as Boogie functions, `even`, immutable `List`, `Optional` |
 | `vcgen.py`   | the core — lowers each Mover Logic obligation to a Boogie procedure |
 | `boogie_backend.py` | runs Boogie; `Emitter` records an obligation per emitted `assert`, keyed by line, so failures map back to source |
-| `checker.py` / `cli.py` | driver and `melvin` verify CLI |
+| `checker.py` / `cli.py` | driver and `melvin` verify CLI (`--doctor`, `--version`) |
+| `tools.py`   | finds/installs Boogie + Z3, locates bundled examples (`melvin-install-boogie`) |
 | `annotate.py` | per-statement mover letters (`--show-movers`, demo gutter); static clause join sharpened by a 3-valued evaluator for acquire/release/cas/known-value writes — display only, never used for verification |
 | `interp.py`  | reference small-step interpreter + `melvin-run`; independent differential oracle for the verifier (explores all interleavings, detects reachable `wrong`); enumerates final stores with a representative trace each, and trace-step stores show per-thread call-frame stacks |
 

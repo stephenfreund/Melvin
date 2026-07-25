@@ -1,0 +1,179 @@
+name: Release
+
+# Publishing a GitHub Release (tag `vX.Y.Z`) does two things:
+#   1. builds and uploads the `melvin-verifier` distributions to PyPI, and
+#   2. rebuilds the demo image and redeploys it to Lightsail.
+#
+# Setup, once:
+#   * PyPI — either configure Trusted Publishing for this repository and the
+#     `release.yml` workflow (https://docs.pypi.org/trusted-publishers/), or
+#     set the repository secret PYPI_API_TOKEN.  Trusted publishing is used
+#     whenever PYPI_API_TOKEN is absent.
+#   * Lightsail — set either AWS_ROLE_ARN (OIDC, preferred) or the pair
+#     AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, plus the AWS_REGION variable.
+#     The deploy step is skipped (not failed) when none of these are set.
+#
+# Cutting a release:
+#   1. bump `__version__` in melvin/__init__.py, commit, push
+#   2. create a GitHub Release whose tag is `v<that version>`
+# The build job fails fast if the tag and `melvin.__version__` disagree.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      publish_pypi:
+        description: "Publish to PyPI"
+        type: boolean
+        default: false
+      deploy_lightsail:
+        description: "Deploy the demo to Lightsail"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check that the tag matches melvin.__version__
+        id: version
+        run: |
+          set -euo pipefail
+          version=$(python -c "
+          import pathlib, re
+          text = pathlib.Path('melvin/__init__.py').read_text()
+          print(re.search(r'__version__\s*=\s*[\"\x27]([^\"\x27]+)', text).group(1))
+          ")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "melvin.__version__ = $version"
+          tag="${{ github.event.release.tag_name }}"
+          if [ -n "$tag" ] && [ "${tag#v}" != "$version" ]; then
+            echo "::error::release tag '$tag' does not match melvin.__version__ '$version';" \
+                 "bump melvin/__init__.py or retag"
+            exit 1
+          fi
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check dist/*
+          ls -l dist
+
+      - name: Smoke-test the built wheel
+        run: |
+          python -m venv /tmp/fresh
+          /tmp/fresh/bin/pip install dist/*.whl
+          test "$(/tmp/fresh/bin/melvin --version)" = "melvin ${{ steps.version.outputs.version }}"
+          /tmp/fresh/bin/python -c "
+          from melvin.tools import examples_dir
+          assert (examples_dir() / 'counter.mml').is_file()
+          "
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  pypi:
+    name: Publish to PyPI
+    needs: build
+    if: github.event_name == 'release' || inputs.publish_pypi
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/melvin-verifier
+    permissions:
+      id-token: write        # trusted publishing (used when PYPI_API_TOKEN is unset)
+    env:
+      HAVE_TOKEN: ${{ secrets.PYPI_API_TOKEN != '' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish (API token)
+        if: env.HAVE_TOKEN == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+
+      - name: Publish (trusted publishing)
+        if: env.HAVE_TOKEN != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  lightsail:
+    name: Deploy the demo to Lightsail
+    needs: [build, pypi]
+    # Runs even if the PyPI job was skipped (manual dispatch without publish).
+    if: ${{ always() && needs.build.result == 'success' && (github.event_name == 'release' || inputs.deploy_lightsail) }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write        # for AWS OIDC (AWS_ROLE_ARN)
+      contents: read
+    env:
+      SERVICE: ${{ vars.LIGHTSAIL_SERVICE || 'melvin-demo' }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for AWS credentials
+        id: creds
+        env:
+          ROLE: ${{ secrets.AWS_ROLE_ARN }}
+          KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        run: |
+          if [ -n "$ROLE" ]; then echo "mode=oidc" >> "$GITHUB_OUTPUT"
+          elif [ -n "$KEY" ]; then echo "mode=keys" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+            echo "::notice::no AWS credentials configured — skipping the Lightsail deploy"
+          fi
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: steps.creds.outputs.mode == 'oidc'
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: steps.creds.outputs.mode == 'keys'
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # `aws lightsail push-container-image` is a plugin, not part of the CLI.
+      - name: Install lightsailctl
+        if: steps.creds.outputs.mode != 'none'
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://s3.us-west-2.amazonaws.com/lightsailctl/latest/linux-amd64/lightsailctl" \
+            -o /usr/local/bin/lightsailctl
+          chmod +x /usr/local/bin/lightsailctl
+          lightsailctl --version || true
+
+      - name: Build image and deploy
+        if: steps.creds.outputs.mode != 'none'
+        run: melvin_server/deploy/deploy-lightsail.sh -s "$SERVICE" -r "$AWS_REGION"
+
+      - name: Report the demo URL
+        if: steps.creds.outputs.mode != 'none'
+        run: |
+          url=$(aws lightsail get-container-services --region "$AWS_REGION" \
+                  --service-name "$SERVICE" \
+                  --query 'containerServices[0].url' --output text)
+          echo "Melvin ${{ needs.build.outputs.version }} deployed: $url" >> "$GITHUB_STEP_SUMMARY"

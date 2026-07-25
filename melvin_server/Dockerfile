@@ -1,13 +1,16 @@
 # Melvin demo image: Python + Melvin + Boogie + Z3 + the demo server.
 #
 # Build from the REPOSITORY ROOT (the build context must include melvin/,
-# examples/, and demo/):
+# examples/, and melvin_server/):
 #
-#     docker build -f demo/Dockerfile -t melvin-demo .
+#     docker build -f melvin_server/Dockerfile -t melvin-demo .
 #     docker run --rm -p 8080:8080 melvin-demo
 #
 # The build runs `melvin examples/counter.mml` as a smoke test, so a broken
 # Python <-> Boogie <-> Z3 toolchain fails the build rather than the demo.
+#
+# This image installs Melvin from the checkout it is built from (not from
+# PyPI), so a release deploys exactly the tagged source.
 
 # ---- stage 1: fetch the Boogie .NET tool --------------------------------
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS boogie
@@ -49,8 +52,11 @@ COPY examples ./examples
 RUN python3 -m venv /opt/venv \
  && pip install --no-cache-dir .
 
-# Smoke test: verify + run one example; the build fails if the toolchain is broken.
-RUN melvin examples/counter.mml && melvin-run examples/oracle_safe.mml
+# Smoke test: report the toolchain, then verify + run one example; the build
+# fails if the Python <-> Boogie <-> Z3 chain is broken.
+RUN melvin --doctor \
+ && melvin examples/counter.mml \
+ && melvin-run examples/oracle_safe.mml
 
 RUN useradd -r -m melvin
 USER melvin

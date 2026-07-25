@@ -1,0 +1,24 @@
+# Keep the demo image's build context small (it needs only melvin/,
+# melvin_server/, examples/, and the packaging metadata).
+.git
+.github
+.claude
+.pytest_cache
+**/__pycache__
+*.py[cod]
+*.egg-info
+build/
+dist/
+htmlcov/
+.coverage*
+*.bpl
+*.pdf
+*.aux
+*.log
+*.out
+WP.*
+media/
+anchor-examples/
+inference-examples/
+tests/
+.DS_Store

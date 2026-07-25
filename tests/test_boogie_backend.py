@@ -161,11 +161,24 @@ def test_discovery_via_env(monkeypatch, tmp_path):
 
 
 def test_discovery_failure(monkeypatch):
-    monkeypatch.delenv("MELVIN_BOOGIE", raising=False)
-    monkeypatch.setattr("shutil.which", lambda name: None)
-    monkeypatch.setattr("os.path.exists", lambda p: False)
-    with pytest.raises(BoogieError):
+    monkeypatch.setattr("melvin.tools.find_boogie", lambda: None)
+    with pytest.raises(BoogieError) as e:
         BoogieBackend()
+    assert "melvin-install-boogie" in str(e.value)
+
+
+def test_prover_path_passed_when_z3_off_path(monkeypatch, tmp_path):
+    """Z3 from the `melvin[z3]` wheel need not be on PATH; Boogie is told where."""
+    fake = tmp_path / "boogie"
+    fake.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("MELVIN_BOOGIE", str(fake))
+    monkeypatch.setattr("melvin.tools.z3_on_path", lambda: False)
+    monkeypatch.setattr("melvin.tools.find_z3", lambda: "/somewhere/z3")
+    b = BoogieBackend()
+    assert b._prover_args() == ["/proverOpt:PROVER_PATH=/somewhere/z3"]
+
+    monkeypatch.setattr("melvin.tools.z3_on_path", lambda: True)
+    assert b._prover_args() == []
 
 
 # -------------------------------------------------------------- timeout
