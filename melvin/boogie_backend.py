@@ -87,6 +87,11 @@ _SUMMARY_RE = re.compile(r"(?P<verified>\d+)\s+verified,\s+(?P<errors>\d+)\s+err
 _MODEL_ENTRY_RE = re.compile(r"^(?P<name>\S+)\s+->\s+(?P<value>.*)$")
 # Opaque model values like T@List!val!0.
 _OPAQUE_RE = re.compile(r"^T@(?P<type>\w+)!val!(?P<n>\d+)$")
+# Two model dialects for maps.  Boogie 2.x exposes two-argument `Select_`
+# graphs keyed by the map value; Boogie 3.x (newer Z3) prints the map value as
+# `(_ (as-array) (k!7))` -- older builds write `(_ as-array k!7)` -- and gives
+# its graph as a separate one-argument `k!7` function entry.
+_AS_ARRAY_RE = re.compile(r"^\(_\s*\(?as-array\)?\s*\(?(?P<fn>[^\s()]+)\)?\s*\)$")
 
 # Effect codes (prelude.py) back to mover letters, for eff/mv model values.
 _EFF_LETTER = {0: "Y", 1: "B", 2: "R", 3: "L", 4: "N", 5: "E"}
@@ -212,6 +217,37 @@ def model_table(raw: Dict[str, str], funcs: Optional[Dict[str, List]] = None,
             seen_objs[disp] = (m.group("type"), v)
         return _clean_value(v)
 
+    def map_rows(mapval: str) -> List[Tuple[str, str]]:
+        """The explicitly listed (key, value) pairs of a map value.
+
+        Handles both model dialects: a `k!n` graph named by an `as-array`
+        value (Boogie 3.x), or the two-argument `Select_` rows keyed by the
+        map value (Boogie 2.x)."""
+        mapval = mapval.strip().strip("|")
+        m = _AS_ARRAY_RE.match(mapval)
+        if m:
+            return sorted((args[0].strip("|"), val)
+                          for args, val in funcs.get(m.group("fn"), [])
+                          if len(args) == 1 and args[0] != "else")
+        return sorted((k, v) for (mv, k), v in select.items() if mv == mapval)
+
+    def map_default(mapval: str) -> Optional[str]:
+        """A map's `else` row: in a first-order model that IS the value of
+        every key not listed explicitly."""
+        m = _AS_ARRAY_RE.match(mapval.strip().strip("|"))
+        if not m:
+            return None
+        for args, val in funcs.get(m.group("fn"), []):
+            if args == ("else",):
+                return val
+        return None
+
+    def map_get(mapval: str, key: str) -> Optional[str]:
+        for k, v in map_rows(mapval):
+            if k == key:
+                return v
+        return map_default(mapval)
+
     def heap_rows(var: str, base: str) -> List[Tuple[str, str]]:
         """Decode a field-map variable f_<C>_<fld> into per-object rows."""
         for cname in sorted(class_fields, key=len, reverse=True):
@@ -220,10 +256,9 @@ def model_table(raw: Dict[str, str], funcs: Optional[Dict[str, List]] = None,
                 mapval = _last_incarnation(raw, base)
                 if mapval is None:
                     return []
-                mapval = mapval.strip("|")
                 out = []
-                for (m, o), val in sorted(select.items()):
-                    if m == mapval and o not in nulls:
+                for o, val in map_rows(mapval):
+                    if o not in nulls:
                         out.append((f"{clean(o)}.{fld}", clean(val)))
                 return out
         return []
@@ -239,21 +274,18 @@ def model_table(raw: Dict[str, str], funcs: Optional[Dict[str, List]] = None,
         mapval = _last_incarnation(raw, base)
         if mapval is None:
             return []
-        mapval = mapval.strip("|")
         out: List[Tuple[str, str]] = []
         if var.startswith("len_"):
-            for (m, a), val in sorted(select.items()):
-                if m == mapval and a not in nulls:
+            for a, val in map_rows(mapval):
+                if a not in nulls:
                     out.append((f"{clean(a)}.length", clean(val)))
             return out
-        # elems: the outer graph yields each array's inner [int]T map value,
-        # the inner graph that map's per-index elements.
-        for (m, a), inner in sorted(select.items()):
-            if m != mapval or a in nulls:
+        # elems: the outer map yields each array's inner [int]T map value,
+        # whose own rows are that array's per-index elements.
+        for a, inner in map_rows(mapval):
+            if a in nulls:
                 continue
-            inner = inner.strip("|")
-            elems = [(i, val) for (m2, i), val in select.items() if m2 == inner]
-            for i, val in sorted(elems, key=lambda e: _idx_key(e[0])):
+            for i, val in sorted(map_rows(inner), key=lambda e: _idx_key(e[0])):
                 out.append((f"{clean(a)}[{_clean_value(i)}]", clean(val)))
         return out
 
@@ -289,7 +321,7 @@ def model_table(raw: Dict[str, str], funcs: Optional[Dict[str, List]] = None,
                 else f"v_len_{cname[4:]}")
         mapval = _last_incarnation(raw, base)
         if mapval is not None:
-            val = select.get((mapval.strip("|"), rawref))
+            val = map_get(mapval, rawref)
             if val is not None:
                 return val
         token = {"int": "$int", "bool": "$bool"}.get(fty, fty)

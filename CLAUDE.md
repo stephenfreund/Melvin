@@ -47,6 +47,12 @@ CI running a modern Boogie against a 2.4-era development machine):
 * **Z3 major version.** Boogie ships against the Z3 4.x line (its README pins
   4.11.2), so the `[z3]` extra is `z3-solver>=4.11,<5` — plain `>=4.12` pulls
   z3-solver 5.x. `melvin --doctor` notes a 5.x build if it finds one.
+* **Map dialect.** Boogie 2.x models expose maps as two-argument `Select_`
+  graphs keyed by the map value; Boogie 3.x prints the map value as
+  `(_ (as-array) (k!n))` with the graph in a separate one-argument `k!n`
+  entry. `model_table`'s `map_rows`/`map_default`/`map_get` read both, so
+  heap, array-length, and per-element counterexample rows survive either
+  (`test_model_table_decodes_as_array_maps`).
 
 ## Packaging and release
 
