@@ -36,6 +36,18 @@ it), in which case `BoogieBackend._prover_args` passes Boogie
 `boogie` package is an unrelated Django library); the tool shells out to the
 executable.
 
+Two prover-version facts the code depends on (both learned the hard way, from
+CI running a modern Boogie against a 2.4-era development machine):
+
+* **Model placement.** Boogie 2.x prints a counterexample model *before* the
+  error it explains; Boogie 3.x prints it *after*. `_interpret` attaches a
+  block to the error just reported when that one has no model yet, and
+  otherwise holds it for the next error, so `--counterexample` works on both
+  (`test_interpret_attaches_model_in_either_order`).
+* **Z3 major version.** Boogie ships against the Z3 4.x line (its README pins
+  4.11.2), so the `[z3]` extra is `z3-solver>=4.11,<5` — plain `>=4.12` pulls
+  z3-solver 5.x. `melvin --doctor` notes a 5.x build if it finds one.
+
 ## Packaging and release
 
 `melvin` is published to PyPI. Single source of version: `__version__` in

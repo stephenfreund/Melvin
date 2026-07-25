@@ -51,6 +51,10 @@ overrides), or you can just point Melvin at it:
 export MELVIN_BOOGIE=/path/to/boogie
 ```
 
+The `[z3]` extra installs a Z3 from the **4.x** line, which is what Boogie is
+built against (its README pins 4.11.2); `MELVIN_Z3` points at a different build
+if you have one.
+
 Boogie is located, in order, from `MELVIN_BOOGIE`, then `boogie`/`Boogie` on
 `PATH`, then `~/.melvin/tools`, then `~/.dotnet/tools`.  Z3 is found from
 `MELVIN_Z3`, then `PATH`, then the Python environment's script directory —

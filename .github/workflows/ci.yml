@@ -90,3 +90,31 @@ jobs:
       # checks the Python <-> Boogie <-> Z3 toolchain inside the container.
       - name: Build the demo image
         run: docker build -f melvin_server/Dockerfile -t melvin-demo .
+
+  # TEMPORARY: dump a modern Boogie model for the array-element counterexample.
+  debug-array-model:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - run: pip install -e ".[test,z3]" && melvin-install-boogie && melvin --doctor
+      - name: Dump the model and the decoded rows
+        run: |
+          cd tests && python -c "
+          import sys; sys.path.insert(0, '.')
+          from test_features import BAD_ARRAY_POST
+          from melvin.checker import check_source
+          res = check_source(BAD_ARRAY_POST, 'arr.mml', counterexample=True)
+          print('=== decoded rows ===')
+          for d in res.diagnostics:
+              print(d.message, '->', d.model)
+          print('=== raw model block ===')
+          out = res.raw_output
+          i = out.find('*** MODEL')
+          print(out[i:i+8000] if i >= 0 else 'NO MODEL BLOCK')
+          "
